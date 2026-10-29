@@ -1,0 +1,40 @@
+{
+  "name": "@aarushgarg1110/amygdala",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Keep confidential strings out of what Claude Code sends to Anthropic: a local proxy that swaps them for placeholders and restores them in the reply.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "amygdala": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write .",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "check": "npm run typecheck && npm run lint && npm run format && npm run coverage"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aarushgarg1110/amygdala.git"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0",
+    "vitest": "5.0.5"
+  }
+}

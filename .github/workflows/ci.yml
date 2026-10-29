@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format
+      - run: npm run coverage
+      - run: npm run build
+      - name: Run the built command
+        run: |
+          set -euo pipefail
+          test "$(node dist/cli.js --version)" = "$(node -p "require('./package.json').version")"
+          node dist/cli.js --help | grep -q '^Usage: amygdala <command>'
+          code=0
+          node dist/cli.js bogus 2> stderr.txt || code=$?
+          test "$code" -eq 2
+          grep -q 'unknown command "bogus"' stderr.txt
+      - name: Package holds only dist, package.json and README
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const files = JSON.parse(require("fs").readFileSync("pack.json", "utf8"))[0].files.map((f) => f.path);
+            const stray = files.filter((p) => !p.startsWith("dist/") && p !== "package.json" && p !== "README.md");
+            if (stray.length) { console.error("unexpected files in the package:", stray); process.exit(1); }
+            console.log("package files:", files.join(", "));
+          '
