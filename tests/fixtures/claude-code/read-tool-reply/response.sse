@@ -1,0 +1,78 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-5-5","id":"msg_011CgX8HwjnZDd6jBo6xahnB","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":168,"cache_read_input_tokens":21328,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":168},"output_tokens":2,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":null,"context_management":null} }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}             }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS8gcKEAgTGAI4AUIIdGhpbmtpbmcSDJKFGtDemUZZ3Lfa6BoM1hOvMKN6nMfFcM30IjChAH1C75r7bMhj1PWMr9EmkmSvFWZXwwLoPJgHx8DhVSR1zpS6XMmmJiF4d6WsPz4qjwcqFUhO/SO1fmdfzuduZknGT9q4JfgF0xEp2v2qnzbNVGycyF2oeSTKjzrA55AmizNVVu1wBsg2/v1FLegv2rlCLv5/TZ8bUyToed1cB1xliSC6mlLfVMAaA+Qgenu0Y36915UQ0BobMdg/S585PIfIU+qfpXRPZvRGCGKwoGNfJJp3i1rPrAHwsyRoFLXZFdCYI4Dzk59BwcAwCbCW4jcn2Cjl+rOKkoR/NYWK+QAvt/Xz9/okjFdBTYNZ68i0uJ6UVZEn0ziSO5aRqWyyRIvKYsIRFBZrJ/H6WFSciASDmFglRoxRIskUrJfjno/YmxLpRZAQlhreE0qrvchZJPIbNTXdFtXjhWsx0oKvx3sfzM7yLOpxHcg6iGM34RThax389GZcDguWg0+o/G3DUazHkPjzHdCfo9K58iQ/w0fY4HFt+DoivGDpqL1tcV+00pgnK+j55iR8HrnOP6Bo5+wg1RLYmC15NA+AFI2ae0TCYNz61PKKJY8ndsvapOP7oqUK0sAInYnNc1rcqYcHqY16v6b35FbLH880maib5mLar6m7VkUy5gxQagG1/iX3bW8U4yd1ZQH/CF9deQ/xBZ7fX+SxSauWAu1wXH3lSW7h4sK2bs6IOJXjwg89EBviwQq8m5JUWAECrmYEx4YSKoSHNJtUK2h35sTphvxsQMIWM+vifmfTVb7AIR3gx+Ve71lMV7mkIbaQIhTlkAfOtAg883zvVdB1iSP2KBwYxP/PwZY5bdHuyhu8FxxN7pJugTPzH3GL5PAhXGY+8Y/5Hye2gyXZTNW1E1tmBhv5eYU3YIaUDLoHjkvAUikECsy+ZyUFazNT6vm10XfhSXXN36AQQfqk3G4PZhfxfSg1ZULRXq8hFJvlyE6Y0Ok1SEE6EybI/FCEiOwy5Nx/dT+8tprj86Uio6ICRZT5A8XA/7cEDr5FRcLvbRwqXoiZ1lfOrCEnz+n+vPVxTeB1ttEGZqsIBG0vHRnoEUg1hMGFGOQ5NazWCF1O/6FexXCZhXR/rE4v17eatZF8/FXwKZ1ToOUw7RmaIm+rQRt/J7Up6GQVh1JFmTy6p5lhwZxnOgbrnJm1fkOgUYLcie8dsmppLZ12aawvxYQvMB5E5iDzXtGHAyVI+bad0EUMrhg9UObAwaznmGIM9Y65duQhGBAJSykXq9W04RhXCNFYLxdLZvDr/HSR5KG3GD0dtZ4vIJWOjBgB"}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Two"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" customers have an"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" m"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"rr of 120: **C"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"UST-0001** and **"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"CUST-0003**."}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nI read `customers.cs"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"v` directly."}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" It has three"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" data"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" rows;"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" CUST-0002 is"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" the"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" only one with a"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" different mrr (480)."} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1             }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":2,"cache_creation_input_tokens":168,"cache_read_input_tokens":21328,"output_tokens":171,"output_tokens_details":{"thinking_tokens":98}},"context_management":{"applied_edits":[]}    }
+
+event: message_stop
+data: {"type":"message_stop"           }
+
