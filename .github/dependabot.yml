@@ -12,6 +12,15 @@ updates:
       development:
         dependency-type: development
         update-types: [minor, patch]
+    ignore:
+      # typescript-eslint 8.72 supports TypeScript <6.1; npm ci fails with ERESOLVE on 7.0.2 (#5).
+      # Remove when typescript-eslint supports TypeScript 7.
+      - dependency-name: typescript
+        versions: ['>=6.1.0']
+      # @types/node follows the oldest Node we support (engines: >=24). A newer major describes
+      # APIs Node 24 doesn't have, and CI can't notice that (#6 passed anyway).
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
