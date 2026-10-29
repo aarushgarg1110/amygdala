@@ -32,6 +32,13 @@ function base32(bytes: Uint8Array): string {
   return out;
 }
 
+/** Throws unless `prefix` is 2-10 uppercase letters or digits, starting with a letter. */
+export function assertPrefix(prefix: string): void {
+  if (!PREFIX_PATTERN.test(prefix)) {
+    throw new Error('prefix must be 2-10 uppercase letters or digits, starting with a letter');
+  }
+}
+
 /**
  * The placeholder for a protected value: PREFIX_ plus the first TOKEN_CHARS base32 characters of
  * HMAC-SHA256(key, detector + "\0" + canonical). Keyed, so holding a placeholder doesn't let anyone
@@ -46,9 +53,7 @@ export function placeholderFor(
   if (key.length < MIN_KEY_BYTES) {
     throw new Error(`HMAC key must be at least ${String(MIN_KEY_BYTES)} bytes`);
   }
-  if (!PREFIX_PATTERN.test(prefix)) {
-    throw new Error('prefix must be 2-10 uppercase letters or digits, starting with a letter');
-  }
+  assertPrefix(prefix);
   if (canonical === '') throw new Error('canonical value must not be empty');
   const digest = createHmac('sha256', key).update(`${detector}\0${canonical}`).digest();
   return `${prefix}_${base32(digest.subarray(0, DIGEST_BYTES_USED)).slice(0, TOKEN_CHARS)}`;
