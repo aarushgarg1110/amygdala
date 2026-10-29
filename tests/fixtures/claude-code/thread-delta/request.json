@@ -1,0 +1,51 @@
+{
+  "model": "claude-haiku-5-5",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "This Bash command contains multiple operations. The following part requires approval: fd -t f '^customers\\.csv$' /home/dev/code/personal/amygdala-spikes/r4-fixtures/work",
+          "is_error": true,
+          "tool_use_id": "toolu_01AqtjMUyHcVzmKkK266CZMs"
+        }
+      ]
+    },
+    {
+      "role": "system",
+      "content": "System prompt text (replaced in this fixture)."
+    }
+  ],
+  "system": [
+    {
+      "type": "text",
+      "text": "System prompt text (replaced in this fixture)."
+    }
+  ],
+  "metadata": {},
+  "max_tokens": 128000,
+  "thinking": {
+    "type": "adaptive",
+    "display": "omitted"
+  },
+  "context_management": {
+    "edits": [
+      {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+      }
+    ]
+  },
+  "output_config": {
+    "effort": "medium"
+  },
+  "thread": {
+    "type": "continue",
+    "previous_message_id": "msg_011CgX8JDgk4ChHtuEzPeoWF"
+  },
+  "diagnostics": {
+    "previous_message_id": "msg_011CgX8JDgk4ChHtuEzPeoWF"
+  },
+  "stream": true
+}
