@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/aarushgarg1110/amygdala/security/advisories/new
+    about: A protected value getting through, or amygdala forwarding a request it didn't scan. Please don't file these as public issues.

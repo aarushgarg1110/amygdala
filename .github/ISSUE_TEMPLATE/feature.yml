@@ -1,0 +1,33 @@
+name: Feature request
+description: Something amygdala should do.
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: no-real-data
+    attributes:
+      label: Before you start
+      options:
+        - label: This request contains no real confidential values; I used synthetic ones such as CUST-0001.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: Who runs into it, and what goes wrong for them today.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: The behavior you want
+      description: A table of inputs and the output you expect for each, including the awkward cases.
+      value: |
+        | Input | Expected output |
+        |---|---|
+        |  |  |
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

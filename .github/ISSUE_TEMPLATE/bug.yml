@@ -1,0 +1,47 @@
+name: Bug report
+description: Something amygdala did wrong.
+labels: [bug]
+body:
+  - type: checkboxes
+    id: no-real-data
+    attributes:
+      label: Before you start
+      options:
+        - label: This report contains no real confidential values; I used synthetic ones such as CUST-0001.
+          required: true
+  - type: markdown
+    attributes:
+      value: If a protected value reached Anthropic, that is a security problem. Report it privately instead (see SECURITY.md).
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: amygdala, Claude Code, Node and macOS.
+      placeholder: amygdala 0.1.0 · Claude Code 2.1.312 · Node 24.14.1 · macOS 26.0
+    validations:
+      required: true
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: audit
+    attributes:
+      label: Audit log lines (optional)
+      description: From ~/.amygdala/audit.jsonl. They hold counts and actions only, never values.
+      render: json

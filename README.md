@@ -22,6 +22,16 @@ The name comes from the brain's threat detector.
 Built in the open. Progress is tracked in the
 [v0.1 milestone](https://github.com/aarushgarg1110/amygdala/milestone/1).
 
+## Security
+
+Found a way for a protected value to get through? Report it privately; see
+[SECURITY.md](SECURITY.md).
+
+## Contributing
+
+Issues are welcome; outside pull requests wait for the license. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 Not chosen yet; it will be decided before v0.1. Until then, all rights are reserved.
