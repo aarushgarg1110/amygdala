@@ -1,43 +1,17 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
 import { StreamParser, formatEvent, type StreamEvent } from '../../src/engine/stream.ts';
+import { FIXTURES, cut, delta, event, parse, recorded, start, stop } from './sse.ts';
 
-const ROOT = 'tests/fixtures/claude-code';
-const recorded = (scenario: string) => readFileSync(join(ROOT, scenario, 'response.sse'), 'utf8');
-const SCENARIOS = readdirSync(ROOT);
+const SCENARIOS = readdirSync(FIXTURES);
 // The recordings only use LF; the spec also allows CRLF and CR, whose CR can end a chunk.
 const STREAMS: [string, string][] = [
   ...SCENARIOS.map((scenario): [string, string] => [scenario, recorded(scenario)]),
   ['text-reply with CRLF', recorded('text-reply').replaceAll('\n', '\r\n')],
   ['text-reply with CR', recorded('text-reply').replaceAll('\n', '\r')],
 ];
-
-/** Every event from pushing `chunks` in order and then ending the stream. */
-function parse(...chunks: string[]): StreamEvent[] {
-  const parser = new StreamParser();
-  return [...chunks.flatMap((chunk) => parser.push(chunk)), ...parser.end()];
-}
-
-/** `text` cut at each of `points` (repeats give empty chunks). */
-function cut(text: string, points: readonly number[]): string[] {
-  const chunks: string[] = [];
-  let start = 0;
-  for (const point of [...points].sort((a, b) => a - b)) {
-    chunks.push(text.slice(start, point));
-    start = point;
-  }
-  return [...chunks, text.slice(start)];
-}
-
-const event = (name: string, data: object) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
-const start = (index: number, block: object) =>
-  event('content_block_start', { type: 'content_block_start', index, content_block: block });
-const delta = (index: number, body: object) =>
-  event('content_block_delta', { type: 'content_block_delta', index, delta: body });
-const stop = (index: number) => event('content_block_stop', { type: 'content_block_stop', index });
 
 describe('StreamParser', () => {
   test.each(SCENARIOS)(

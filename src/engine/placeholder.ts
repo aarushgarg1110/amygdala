@@ -4,6 +4,8 @@ import { createHmac } from 'node:crypto';
 export const TOKEN_CHARS = 10;
 /** The shortest HMAC key accepted, in bytes. */
 export const MIN_KEY_BYTES = 32;
+/** The longest prefix a placeholder can have, as PLACEHOLDER_PATTERN allows. */
+export const MAX_PREFIX = 10;
 /** What every placeholder looks like; the restorer relies on this shape. */
 export const PLACEHOLDER_PATTERN = /^[A-Z][A-Z0-9]{1,9}_[a-z2-7]{10}$/;
 

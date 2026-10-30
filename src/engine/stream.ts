@@ -20,7 +20,8 @@ export interface StreamEvent {
 // The SSE spec ends a line at CRLF, LF or CR.
 const LINE_END = /\r\n|\r|\n/;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+/** Narrows an event's parsed `data` (or a field of it) to an object. */
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
 function parseData(text: string): unknown {

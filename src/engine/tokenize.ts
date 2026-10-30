@@ -1,4 +1,5 @@
 import type { Detector } from './detector.ts';
+import { MAX_PREFIX } from './placeholder.ts';
 import type { TokenMap } from './token-map.ts';
 
 /** A string with its protected values replaced, and how many each detector replaced. */
@@ -16,10 +17,11 @@ interface Claim {
   exact: boolean;
 }
 
-// Uppercase letters or digits, then "_" and exactly 10 base32 characters. The run before "_" can be
-// longer than the prefix when the original value followed other capitals ("IDCUST-0001").
-const PLACEHOLDER_CANDIDATE = /([A-Z0-9]{2,})_([a-z2-7]{10})/g;
-const MAX_PREFIX = 10;
+/**
+ * Uppercase letters or digits, then "_" and exactly 10 base32 characters. The run before "_" can be
+ * longer than the prefix when the original value followed other capitals ("IDCUST-0001").
+ */
+export const PLACEHOLDER_CANDIDATE = /([A-Z0-9]{2,})_([a-z2-7]{10})/g;
 
 /**
  * Spans from every detector, merged where they overlap so that no character a detector claimed is
