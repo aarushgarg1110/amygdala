@@ -1,7 +1,8 @@
 import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { CONFIG_FILE, DEFAULT_CONFIG } from './config.ts';
+import { ensureCertificates, type CertDeps } from './cert-store.ts';
+import { CONFIG_FILE, DEFAULT_CONFIG, loadInterceptHosts } from './config.ts';
 import { newKeyHex } from './key.ts';
 import type { SecretStore } from './keychain.ts';
 
@@ -24,11 +25,19 @@ export function dataDir(env: Readonly<Record<string, string | undefined>>, home 
   return chosen === undefined || chosen === '' ? join(home, '.amygdala') : resolve(chosen);
 }
 
+/** What `init` reaches outside itself through: the main key's store, and the certificates'. */
+export interface InitDeps extends CertDeps {
+  readonly store: SecretStore;
+}
+
 /**
- * Sets up the data folder `dir`: the folder, its key in `store` and a default config. Anything
- * that exists is kept, so running it twice changes nothing. Returns one line per item.
+ * Sets up the data folder `dir`: the folder, its key in `store`, a default config and the
+ * certificates for its intercept hosts. Anything good is kept, so running it twice changes
+ * nothing; certificates are renewed when the hosts change or they near expiry. Returns one line
+ * per item.
  */
-export function init(dir: string, store: SecretStore): string[] {
+export function init(dir: string, deps: InitDeps): string[] {
+  const { store } = deps;
   const lines: string[] = [];
   const folder = statSync(dir, { throwIfNoEntry: false });
   if (folder === undefined) {
@@ -56,5 +65,6 @@ export function init(dir: string, store: SecretStore): string[] {
   } else {
     lines.push(`kept    ${file}`);
   }
+  lines.push(ensureCertificates(dir, loadInterceptHosts(dir), deps));
   return lines;
 }

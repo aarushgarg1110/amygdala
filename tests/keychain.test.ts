@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { KEYCHAIN_SERVICE, KeychainError, MacKeychain } from '../src/keychain.ts';
+import {
+  KEYCHAIN_SERVICE,
+  KeychainError,
+  MacKeychain,
+  TLS_KEY_SERVICE,
+  tlsKeyStore,
+} from '../src/keychain.ts';
 import type { Run } from '../src/process.ts';
 
 const SECRET = 'ab'.repeat(32);
@@ -125,6 +131,40 @@ describe('MacKeychain', () => {
     },
   );
 
+  test('should use the host-key service without a prompt, and remove items', () => {
+    // Act
+    const { calls, run } = recorder(0);
+    const tls = tlsKeyStore(run);
+    tls.add('/data/amygdala', SECRET);
+    tls.remove('/data/amygdala');
+
+    // Assert: its own service, no empty trusted list, and delete by name
+    expect(calls[0]?.input).toBe(
+      `"add-generic-password" "-s" "amygdala-tls" "-a" "/data/amygdala" "-w" "${SECRET}"\n`,
+    );
+    expect(calls[1]?.args).toEqual([
+      'delete-generic-password',
+      '-s',
+      'amygdala-tls',
+      '-a',
+      '/data/amygdala',
+    ]);
+  });
+
+  test.each([
+    [44, undefined],
+    [1, 'the Keychain could not remove the key (security exit 1)'],
+  ])(
+    'should treat removing a missing item as done, and other failures as errors: exit %i',
+    (status, message) => {
+      const remove = () => {
+        new MacKeychain({ run: recorder(status).run }).remove('/d');
+      };
+      if (message === undefined) expect(remove).not.toThrow();
+      else expect(remove).toThrow(new KeychainError(message));
+    },
+  );
+
   test.each(['/a "quoted" dir', '/a\\back', '/a\nline'])(
     'should refuse a folder path holding a quote, a backslash or a line break: %j',
     (account) => {
@@ -167,6 +207,21 @@ describe('MacKeychain', () => {
       const store = new MacKeychain({ keychain, askOnRead: false });
       store.add('/Users/a b/.amygdala', SECRET);
       expect(store.read('/Users/a b/.amygdala')).toBe(SECRET);
+    });
+
+    test('should keep the host-key service apart and remove its items', () => {
+      // Assemble: a main key and a host key for one folder
+      const main = new MacKeychain({ keychain, askOnRead: false });
+      const tls = new MacKeychain({ keychain, service: TLS_KEY_SERVICE, askOnRead: false });
+      main.add('/data/two', SECRET);
+      tls.add('/data/two', 'host-key');
+
+      // Act
+      tls.remove('/data/two');
+      tls.remove('/data/two');
+
+      // Assert: only the host key went, and a second remove is fine
+      expect([tls.has('/data/two'), main.read('/data/two')]).toEqual([false, SECRET]);
     });
   });
 });

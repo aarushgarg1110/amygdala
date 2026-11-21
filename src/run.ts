@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { dataDir, init, InitError } from './init.ts';
-import { KeychainError, MacKeychain, type SecretStore } from './keychain.ts';
+import { CertificateError } from './cert-store.ts';
+import { MintError, OpensslMinter } from './certs.ts';
+import { ConfigError } from './config.ts';
+import { dataDir, init, InitError, type InitDeps } from './init.ts';
+import { KeychainError, MacKeychain, tlsKeyStore } from './keychain.ts';
 
 /** What a command prints and the code it exits with; the entry point does the writing. */
 export interface Outcome {
@@ -10,10 +13,16 @@ export interface Outcome {
 }
 
 /** What commands reach outside themselves through, so tests can hand in their own. */
-export interface Deps {
+export interface Deps extends InitDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly store: SecretStore;
 }
+
+const realDeps = (): Deps => ({
+  env: process.env,
+  store: new MacKeychain(),
+  tlsKeys: tlsKeyStore(),
+  minter: new OpensslMinter(),
+});
 
 const USAGE = `Usage: amygdala <command>
 
@@ -46,10 +55,7 @@ export function packageVersion(read: ReadFile = (url) => readFileSync(url, 'utf8
   throw new Error('package.json has no string "version" field');
 }
 
-export function run(
-  args: readonly string[],
-  deps: Deps = { env: process.env, store: new MacKeychain() },
-): Outcome {
+export function run(args: readonly string[], deps: Deps = realDeps()): Outcome {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help') {
     return { exitCode: 0, stdout: USAGE, stderr: '' };
@@ -75,13 +81,16 @@ function runInit(options: readonly string[], deps: Deps): Outcome {
     };
   }
   try {
-    const lines = init(dataDir(deps.env), deps.store);
+    const lines = init(dataDir(deps.env), deps);
     return { exitCode: 0, stdout: lines.map((line) => `${line}\n`).join(''), stderr: '' };
   } catch (error) {
     // A file-system refusal (no permission) carries a code; anything else is a bug and crashes.
     const known =
       error instanceof InitError ||
       error instanceof KeychainError ||
+      error instanceof ConfigError ||
+      error instanceof MintError ||
+      error instanceof CertificateError ||
       (error instanceof Error && 'code' in error);
     if (!known) throw error;
     return { exitCode: EXIT_FAILURE, stdout: '', stderr: `amygdala init: ${error.message}\n` };
