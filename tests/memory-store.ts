@@ -21,4 +21,9 @@ export class MemoryStore implements SecretStore {
       throw new KeychainError(`a key for ${account} is already in the Keychain`);
     this.secrets.set(account, secret);
   }
+
+  remove(account: string): void {
+    this.calls.push(`remove ${account}`);
+    this.secrets.delete(account);
+  }
 }

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { CONFIG_FILE, DEFAULT_CONFIG } from '../src/config.ts';
 import { dataDir, init, InitError } from '../src/init.ts';
+import { depsFor } from './deps.ts';
 import { MemoryStore } from './memory-store.ts';
 
 const CREATED_DIRS: string[] = [];
@@ -25,13 +26,14 @@ describe('init', () => {
     const store = new MemoryStore();
 
     // Act
-    const lines = init(dir, store);
+    const lines = init(dir, depsFor(store));
 
     // Assert
     expect(lines).toEqual([
       `created ${dir} (owner only)`,
       'created a key in the Keychain (macOS will ask for your password when amygdala starts)',
       `created ${join(dir, CONFIG_FILE)} (add a detector before starting)`,
+      expect.stringMatching(/^created certificates for 4 hosts, valid until \d{4}-\d\d-\d\d$/),
     ]);
     expect(mode(dir)).toBe(0o700);
     expect(store.secrets.get(dir)).toMatch(/^[0-9a-f]{64}$/);
@@ -43,18 +45,20 @@ describe('init', () => {
     // Assemble: a first run, then an edit to the config
     const dir = freshDir();
     const store = new MemoryStore();
-    init(dir, store);
+    const deps = depsFor(store);
+    init(dir, deps);
     const key = store.secrets.get(dir);
     writeFileSync(join(dir, CONFIG_FILE), '# edited\n');
 
     // Act
-    const lines = init(dir, store);
+    const lines = init(dir, deps);
 
     // Assert
     expect(lines).toEqual([
       `kept    ${dir}`,
       'kept    the key in the Keychain',
       `kept    ${join(dir, CONFIG_FILE)}`,
+      expect.stringMatching(/^kept {4}certificates for 4 hosts, valid until /),
     ]);
     expect(store.secrets.get(dir)).toBe(key);
     expect(readFileSync(join(dir, CONFIG_FILE), 'utf8')).toBe('# edited\n');
@@ -68,7 +72,7 @@ describe('init', () => {
     const store = new MemoryStore();
 
     // Act
-    const lines = init(dir, store);
+    const lines = init(dir, depsFor(store));
 
     // Assert
     expect(lines[1]).toMatch(/^created a key/);
@@ -81,8 +85,8 @@ describe('init', () => {
     // Act
     const store = new MemoryStore();
     const [one, two] = [freshDir(), freshDir()];
-    init(one, store);
-    init(two, store);
+    init(one, depsFor(store));
+    init(two, depsFor(store));
 
     // Assert
     expect(store.secrets.size).toBe(2);
@@ -93,8 +97,9 @@ describe('init', () => {
     // Act
     const dir = freshDir();
     const store = new MemoryStore();
-    init(dir, store);
-    init(dir, store);
+    const deps = depsFor(store);
+    init(dir, deps);
+    init(dir, deps);
 
     // Assert: reading would make macOS ask for the password on every rerun
     expect(store.calls).toEqual([`has ${dir}`, `add ${dir}`, `has ${dir}`]);
@@ -108,7 +113,9 @@ describe('init', () => {
     const store = new MemoryStore();
 
     // Act and Assert
-    expect(() => init(dir, store)).toThrow(new InitError(`${dir} exists and is not a folder`));
+    expect(() => init(dir, depsFor(store))).toThrow(
+      new InitError(`${dir} exists and is not a folder`),
+    );
     expect(store.calls).toEqual([]);
   });
 });
