@@ -185,7 +185,7 @@ function hostsFrom(root: Table): string[] {
       );
     }
   });
-  if (!hosts.includes(API_HOST)) {
+  if (!hosts.some((host) => host === API_HOST)) {
     throw table.error('intercept_hosts', `must include ${API_HOST}, which carries every request`);
   }
   return hosts;
