@@ -68,15 +68,22 @@ export function tokenizeText(
   return { text: out + text.slice(cursor), hits };
 }
 
-/** `text` with every placeholder `map` issued replaced by its original; anything else untouched. */
-export function restoreText(text: string, map: TokenMap): string {
+/**
+ * `text` with every placeholder `map` issued replaced by its original; anything else untouched.
+ * `encode` rewrites each original first, e.g. JSON-escaping it when `text` is JSON.
+ */
+export function restoreText(
+  text: string,
+  map: TokenMap,
+  encode: (original: string) => string = (original) => original,
+): string {
   return text.replace(PLACEHOLDER_CANDIDATE, (match, run: string, body: string) => {
     // Try the longest prefix first, down to two characters. Only placeholders the map issued are
     // found, so a candidate that merely looks like one is left alone.
     for (let length = Math.min(run.length, MAX_PREFIX); length >= 2; length--) {
       const prefix = run.slice(run.length - length);
       const original = map.original(`${prefix}_${body}`);
-      if (original !== undefined) return run.slice(0, run.length - length) + original;
+      if (original !== undefined) return run.slice(0, run.length - length) + encode(original);
     }
     return match;
   });

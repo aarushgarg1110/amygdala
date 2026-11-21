@@ -1,6 +1,12 @@
+import { isDeepStrictEqual } from 'node:util';
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
-import { MAX_HOLDBACK_CHARS, StreamRestorer } from '../../src/engine/restore.ts';
+import {
+  DEFAULT_TRUSTED_TOOLS,
+  MAX_HOLDBACK_CHARS,
+  StreamRestorer,
+  type RestorerOptions,
+} from '../../src/engine/restore.ts';
 import { TokenMap } from '../../src/engine/token-map.ts';
 import { restoreText } from '../../src/engine/tokenize.ts';
 import { cut, delta, parse, recorded, start, stop } from './sse.ts';
@@ -20,9 +26,25 @@ const textBlock = (index: number, chunks: readonly string[]) =>
   chunks.map((text) => delta(index, { type: 'text_delta', text })).join('') +
   stop(index);
 
+/** A `type` block at `index` calling `name`, its arguments arriving as `chunks`. */
+const toolBlock = (
+  index: number,
+  name: string | undefined,
+  chunks: readonly string[],
+  type = 'tool_use',
+) =>
+  start(index, {
+    type,
+    id: `toolu_${String(index)}`,
+    ...(name === undefined ? {} : { name }),
+    input: {},
+  }) +
+  chunks.map((json) => delta(index, { type: 'input_json_delta', partial_json: json })).join('') +
+  stop(index);
+
 /** `sse` as the restorer sends it on. */
-function restore(sse: string, map = MAP): string {
-  const restorer = new StreamRestorer(map);
+function restore(sse: string, map = MAP, options: RestorerOptions = {}): string {
+  const restorer = new StreamRestorer(map, options);
   return (
     parse(sse)
       .map((event) => restorer.push(event))
@@ -35,6 +57,16 @@ const textDeltas = (sse: string) =>
   parse(sse).flatMap((event) => {
     const sent = (event.data as { delta?: { type: string; text?: string } } | undefined)?.delta;
     return sent?.type === 'text_delta' && sent.text !== undefined ? [sent.text] : [];
+  });
+
+/** The partial_json of every input_json_delta in `sse`, in order. */
+const argDeltas = (sse: string) =>
+  parse(sse).flatMap((event) => {
+    const sent = (event.data as { delta?: { type: string; partial_json?: string } } | undefined)
+      ?.delta;
+    return sent?.type === 'input_json_delta' && sent.partial_json !== undefined
+      ? [sent.partial_json]
+      : [];
   });
 
 describe('StreamRestorer', () => {
@@ -174,29 +206,48 @@ describe('StreamRestorer', () => {
     expect(textDeltas(restore(textBlock(0, [text])))).toEqual(sent);
   });
 
+  // read-tool-reply ends one text chunk in "**C" and read-tool-prompt one Bash chunk in "2>&1":
+  // both are held and sent with the next chunk, so those two events are rewritten.
   test.each([
-    ...['text-reply', 'read-tool-prompt', 'read-tool-result', 'thread-first', 'thread-delta'].map(
-      (scenario) => [scenario, recorded(scenario)],
-    ),
+    ...['text-reply', 'read-tool-result', 'thread-first', 'thread-delta'].map((scenario) => [
+      scenario,
+      recorded(scenario),
+    ]),
     ['a text block with no deltas', textBlock(0, [])],
   ])('should forward a delta with nothing to restore byte for byte: %s', (label, sse) => {
     expect(restore(sse)).toBe(sse);
+  });
+
+  test.each(
+    [
+      'text-reply',
+      'read-tool-prompt',
+      'read-tool-result',
+      'read-tool-reply',
+      'thread-first',
+      'thread-delta',
+    ].map((scenario) => [scenario, recorded(scenario)]),
+  )('should keep every recorded stream’s events, text and arguments: %s', (label, sse) => {
+    // Act
+    const sent = restore(sse);
+
+    // Assert
+    expect(parse(sent).map((e) => e.name)).toEqual(parse(sse).map((e) => e.name));
+    expect(textDeltas(sent).join('')).toBe(textDeltas(sse).join(''));
+    expect(argDeltas(sent).join('')).toBe(argDeltas(sse).join(''));
   });
 
   test('should forward a fully held delta with empty text', () => {
     expect(textDeltas(restore(textBlock(0, ['A', 'B c'])))).toEqual(['', 'AB c']);
   });
 
-  test('should leave thinking, signatures and tool arguments alone', () => {
+  test('should leave thinking and signatures alone', () => {
     // Assemble
     const sse =
       start(0, { type: 'thinking', thinking: '', signature: '' }) +
       delta(0, { type: 'thinking_delta', thinking: `The file mentions ${ONE}.` }) +
       delta(0, { type: 'signature_delta', signature: 'c2lnbmVk' }) +
-      stop(0) +
-      start(1, { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }) +
-      delta(1, { type: 'input_json_delta', partial_json: `{"file_path": "/data/${ONE}.csv"}` }) +
-      stop(1);
+      stop(0);
 
     // Act and Assert
     expect(restore(sse)).toBe(sse);
@@ -239,18 +290,292 @@ describe('StreamRestorer', () => {
 });
 
 describe('StreamRestorer: tool arguments', () => {
-  test.todo("should restore a placeholder in a trusted tool's arguments");
-  test.todo('should restore one split across argument chunks at every position');
-  test.todo('should JSON-escape a restored value');
-  test.todo('should give the restored arguments for any chunking');
-  test.todo("should leave untrusted tools' arguments alone");
-  test.todo('should leave unnamed and server tool calls alone');
-  test.todo('should trust MCP tools only by a configured prefix');
-  test.todo("should send held arguments before the block's stop");
-  test.todo('should restore text and arguments in one reply by their own rules');
-  test.todo('should use a custom trusted list instead of the default');
-  test.todo('should send held arguments from end()');
-  test.todo('should leave an unissued lookalike in arguments alone');
-  test.todo('should refuse an MCP prefix that could trust the wrong tools');
-  test.todo('should export the decided default trusted list');
+  test("should restore a placeholder in a trusted tool's arguments", () => {
+    // Act
+    const sent = argDeltas(restore(toolBlock(1, 'Read', [`{"file_path": "/data/${ONE}.csv"}`])));
+
+    // Assert
+    expect(sent).toEqual(['{"file_path": "/data/CUST-0001.csv"}']);
+  });
+
+  test.each([
+    ['ending in a letter', ONE, 'CUST-0001'],
+    ['ending in a base32 digit', THREE, 'CUST-0003'],
+  ])(
+    'should restore one split across argument chunks at every position: %s',
+    (label, placeholder, id) => {
+      // Assemble
+      const args = JSON.stringify({ command: `grep ${placeholder} data.csv` });
+      const want = JSON.stringify({ command: `grep ${id} data.csv` });
+
+      // Act: every split, checking the joined arguments and that no piece of a placeholder went out
+      const wrong = [...Array(args.length + 1).keys()].filter((at) => {
+        const sent = argDeltas(restore(toolBlock(1, 'Bash', [args.slice(0, at), args.slice(at)])));
+        return sent.join('') !== want || sent.some((piece) => piece.includes('_'));
+      });
+
+      // Assert
+      expect(wrong).toEqual([]);
+    },
+  );
+
+  test('should JSON-escape a restored value', () => {
+    // Assemble
+    const map = new TokenMap(KEY);
+    const original = 'a "quoted" \\ back\nslash é';
+    const placeholder = map.issue('pattern:note', 'NOTE', original, original);
+    const args = JSON.stringify({ command: `echo ${placeholder}` });
+
+    // Act
+    const sent = argDeltas(restore(toolBlock(1, 'Bash', [args]), map)).join('');
+
+    // Assert
+    expect(JSON.parse(sent)).toEqual({ command: `echo ${original}` });
+  });
+
+  test('should give the restored arguments for any chunking', () => {
+    const piece = fc.constantFrom(
+      ONE,
+      TWO,
+      THREE,
+      LOOKALIKE,
+      'CUST_aaaaaaaaa2',
+      'USA',
+      'X9',
+      '_',
+      ' ',
+      '"',
+      '\\',
+      '\n',
+      'é',
+    );
+    const value = fc.array(piece, { maxLength: 12 }).map((pieces) => pieces.join(''));
+    fc.assert(
+      fc.property(
+        fc.dictionary(fc.constantFrom('command', 'file_path', 'pattern'), value),
+        fc.array(fc.nat(), { maxLength: 20 }),
+        (input, points) => {
+          const args = JSON.stringify(input);
+          const chunks = cut(
+            args,
+            points.map((point) => point % (args.length + 1)),
+          );
+          const sent = argDeltas(restore(toolBlock(1, 'Bash', chunks))).join('');
+          const want = Object.fromEntries(
+            Object.entries(input).map(([field, text]) => [field, restoreText(text, MAP)]),
+          );
+          return isDeepStrictEqual(JSON.parse(sent), want);
+        },
+      ),
+    );
+  });
+
+  test.each(['WebFetch', 'Artifact', 'mcp__claude_ai_Notion__notion-search', 'SomeNewTool'])(
+    "should leave untrusted tools' arguments alone: %s",
+    (name) => {
+      // Assemble
+      const sse = toolBlock(1, name, [`{"url": "https://example.com/${ONE}"}`]);
+
+      // Act and Assert
+      expect(restore(sse)).toBe(sse);
+    },
+  );
+
+  test.each([
+    ['a tool_use without a name', toolBlock(1, undefined, [`{"q": "${ONE}"}`])],
+    [
+      'a server_tool_use named like a trusted tool',
+      toolBlock(1, 'Read', [`{"q": "${ONE}"}`], 'server_tool_use'),
+    ],
+  ])('should leave unnamed and server tool calls alone: %s', (label, sse) => {
+    expect(restore(sse)).toBe(sse);
+  });
+
+  test('should trust MCP tools only by a configured prefix', () => {
+    // Assemble
+    const options = { trustedPrefixes: ['mcp__plugin_ops_ops__'] };
+    const args = [`{"key": "${ONE}"}`];
+    const lookalike = toolBlock(1, 'mcp__plugin_ops_opsx__fetch', args);
+    const unconfigured = toolBlock(1, 'mcp__plugin_ops_ops__fetch', args);
+
+    // Act
+    const trusted = argDeltas(
+      restore(toolBlock(1, 'mcp__plugin_ops_ops__fetch', args), MAP, options),
+    );
+
+    // Assert
+    expect(trusted).toEqual(['{"key": "CUST-0001"}']);
+    expect(restore(lookalike, MAP, options)).toBe(lookalike);
+    expect(restore(unconfigured)).toBe(unconfigured);
+  });
+
+  test("should send held arguments before the block's stop", () => {
+    // Act
+    const events = parse(restore(toolBlock(1, 'Bash', ['{"command": "echo CUST_ggf'])));
+
+    // Assert: one extra input_json_delta, unchanged, right before the stop
+    expect(events.map((e) => e.name)).toEqual([
+      'content_block_start',
+      'content_block_delta',
+      'content_block_delta',
+      'content_block_stop',
+    ]);
+    expect(argDeltas(events.map((e) => e.raw).join(''))).toEqual([
+      '{"command": "echo ',
+      'CUST_ggf',
+    ]);
+  });
+
+  test('should restore text and arguments in one reply by their own rules', () => {
+    // Assemble: the text and two tool blocks interleave, each with a placeholder split in two
+    const map = new TokenMap(KEY);
+    const original = 'say "hi"';
+    const note = map.issue('pattern:note', 'NOTE', original, original);
+    const tool = (index: number) => ({
+      type: 'tool_use',
+      id: `toolu_${String(index)}`,
+      name: 'Bash',
+      input: {},
+    });
+    const args = (index: number, json: string) =>
+      delta(index, { type: 'input_json_delta', partial_json: json });
+    const sse =
+      start(0, { type: 'text', text: '' }) +
+      start(1, tool(1)) +
+      start(2, tool(2)) +
+      delta(0, { type: 'text_delta', text: `About ${note.slice(0, 7)}` }) +
+      args(1, `{"command": "echo ${note.slice(0, 9)}`) +
+      args(2, `{"command": "cat ${note.slice(0, 3)}`) +
+      delta(0, { type: 'text_delta', text: `${note.slice(7)}.` }) +
+      args(1, `${note.slice(9)}"}`) +
+      args(2, `${note.slice(3)}"}`) +
+      stop(0) +
+      stop(1) +
+      stop(2);
+
+    // Act
+    const events = parse(restore(sse, map));
+    const argsOf = (index: number) =>
+      argDeltas(
+        events
+          .filter((e) => (e.data as { index?: number } | undefined)?.index === index)
+          .map((e) => e.raw)
+          .join(''),
+      ).join('');
+
+    // Assert: text is restored raw, arguments JSON-escaped, and no block's hold-back joins another's
+    expect(textDeltas(events.map((e) => e.raw).join('')).join('')).toBe(`About ${original}.`);
+    expect(JSON.parse(argsOf(1))).toEqual({ command: `echo ${original}` });
+    expect(JSON.parse(argsOf(2))).toEqual({ command: `cat ${original}` });
+  });
+
+  test.each([
+    ['the shortest prefix', 'AB'],
+    ['the longest prefix', 'ABCDEFGHIJ'],
+  ])('should restore placeholders with %s in arguments', (label, prefix) => {
+    // Assemble
+    const map = new TokenMap(KEY);
+    const placeholder = map.issue('pattern:edge', prefix, 'X-1', 'X-1');
+    const args = JSON.stringify({ pattern: placeholder });
+
+    // Act: split one character before the end of the placeholder
+    const sent = argDeltas(restore(toolBlock(1, 'Grep', [args.slice(0, -3), args.slice(-3)]), map));
+
+    // Assert
+    expect(sent.join('')).toBe(JSON.stringify({ pattern: 'X-1' }));
+  });
+
+  test('should use a custom trusted list instead of the default', () => {
+    // Assemble
+    const options = { trustedTools: ['Fetcher'] };
+    const read = toolBlock(1, 'Read', [`{"file_path": "${ONE}"}`]);
+
+    // Act
+    const custom = argDeltas(restore(toolBlock(1, 'Fetcher', [`{"id": "${ONE}"}`]), MAP, options));
+
+    // Assert
+    expect(custom).toEqual(['{"id": "CUST-0001"}']);
+    expect(restore(read, MAP, options)).toBe(read);
+  });
+
+  test('should send held arguments from end()', () => {
+    // Act: the stream stops without closing its block
+    const sent = argDeltas(
+      restore(
+        start(1, { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} }) +
+          delta(1, { type: 'input_json_delta', partial_json: '{"command": "x CUST_' }),
+      ),
+    );
+
+    // Assert
+    expect(sent).toEqual(['{"command": "x ', 'CUST_']);
+  });
+
+  test.each([
+    [
+      'a text_delta without text',
+      textBlock(0, []).replace(
+        'event: content_block_stop',
+        `${delta(0, { type: 'text_delta' })}event: content_block_stop`,
+      ),
+    ],
+    [
+      'an input_json_delta whose partial_json is a number',
+      toolBlock(1, 'Bash', []).replace(
+        'event: content_block_stop',
+        `${delta(1, { type: 'input_json_delta', partial_json: 7 })}event: content_block_stop`,
+      ),
+    ],
+  ])('should forward a delta whose content is not a string unchanged: %s', (label, sse) => {
+    expect(restore(sse)).toBe(sse);
+  });
+
+  test('should leave an unissued lookalike in arguments alone', () => {
+    // Assemble
+    const args = `{"file_path": "/data/${LOOKALIKE}.csv"}`;
+
+    // Act
+    const whole = argDeltas(restore(toolBlock(1, 'Read', [args])));
+    const split = argDeltas(restore(toolBlock(1, 'Read', [args.slice(0, 25), args.slice(25)])));
+
+    // Assert
+    expect(whole.join('')).toBe(args);
+    expect(split.join('')).toBe(args);
+  });
+
+  test.each([
+    ['not starting with mcp__', 'plugin_ops_ops__'],
+    ['not ending with __', 'mcp__ops'],
+    ['nothing between the underscores', 'mcp____'],
+    ['a claude.ai connector', 'mcp__claude_ai_Notion__'],
+  ])('should refuse an MCP prefix that could trust the wrong tools: %s', (label, prefix) => {
+    expect(() => new StreamRestorer(MAP, { trustedPrefixes: [prefix] })).toThrow(prefix);
+  });
+
+  test('should export the decided default trusted list', () => {
+    expect([...DEFAULT_TRUSTED_TOOLS].sort()).toEqual(
+      [
+        'Read',
+        'Write',
+        'Edit',
+        'NotebookEdit',
+        'Grep',
+        'Glob',
+        'Bash',
+        'Monitor',
+        'TaskStop',
+        'Agent',
+        'Workflow',
+        'Skill',
+        'ToolSearch',
+        'AskUserQuestion',
+        'TodoWrite',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'ScheduleWakeup',
+        'EnterWorktree',
+        'ExitWorktree',
+      ].sort(),
+    );
+  });
 });
