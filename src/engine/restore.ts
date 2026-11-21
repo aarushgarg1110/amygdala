@@ -2,62 +2,10 @@ import { MAX_PREFIX, TOKEN_CHARS } from './placeholder.ts';
 import { formatEvent, isRecord, type Block, type StreamEvent } from './stream.ts';
 import type { TokenMap } from './token-map.ts';
 import { PLACEHOLDER_CANDIDATE, restoreText } from './tokenize.ts';
+import { trustRule, type TrustOptions } from './trust.ts';
 
 /** The longest end of streamed text that could still become a placeholder: prefix, "_", 9 of 10. */
 export const MAX_HOLDBACK_CHARS = MAX_PREFIX + 1 + TOKEN_CHARS - 1;
-
-/**
- * Tools that run on the user's machine, so their arguments get real values back. Tools that send
- * their arguments elsewhere (Artifact, WebFetch, SendMessage, connectors) and unknown tools are not
- * listed, so they keep placeholders.
- */
-export const DEFAULT_TRUSTED_TOOLS: readonly string[] = [
-  'Read',
-  'Write',
-  'Edit',
-  'NotebookEdit',
-  'Grep',
-  'Glob',
-  'Bash',
-  'Monitor',
-  'TaskStop',
-  // Their own model calls go back through amygdala.
-  'Agent',
-  'Workflow',
-  'Skill',
-  'ToolSearch',
-  'AskUserQuestion',
-  'TodoWrite',
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'ScheduleWakeup',
-  'EnterWorktree',
-  'ExitWorktree',
-];
-
-export interface RestorerOptions {
-  /** Tool names whose arguments are restored. Replaces DEFAULT_TRUSTED_TOOLS. */
-  readonly trustedTools?: readonly string[];
-  /** Name prefixes of local MCP servers whose tools are restored, e.g. `mcp__plugin_ops_ops__`. */
-  readonly trustedPrefixes?: readonly string[];
-}
-
-// "mcp__<server>__": the closing "__" keeps "mcp__ops__" from also trusting "mcp__opsx__".
-const MCP_PREFIX = /^mcp__.+__$/u;
-// claude.ai connectors are called from Anthropic's side, so real values in their arguments would
-// leave the machine.
-const CONNECTOR_PREFIX = 'mcp__claude_ai_';
-
-function assertTrustedPrefix(prefix: string): void {
-  if (!MCP_PREFIX.test(prefix)) {
-    throw new Error(`trusted MCP prefix "${prefix}" must start with "mcp__" and end with "__"`);
-  }
-  if (prefix.startsWith(CONNECTOR_PREFIX)) {
-    throw new Error(
-      `trusted MCP prefix "${prefix}" names a claude.ai connector, which runs remotely`,
-    );
-  }
-}
 
 /** A block whose content is restored: the delta type that carries it and how originals go in. */
 interface Restorable {
@@ -102,17 +50,13 @@ function holdFrom(text: string): number {
  */
 export class StreamRestorer {
   readonly #map: TokenMap;
-  readonly #trustedTools: ReadonlySet<string>;
-  readonly #trustedPrefixes: readonly string[];
+  readonly #trusts: (name: string) => boolean;
   /** Per block index, the end of its content not sent yet. */
   readonly #held = new Map<number, { readonly kind: Restorable; readonly text: string }>();
 
-  constructor(map: TokenMap, options: RestorerOptions = {}) {
-    const prefixes = options.trustedPrefixes ?? [];
-    prefixes.forEach(assertTrustedPrefix);
+  constructor(map: TokenMap, options: TrustOptions = {}) {
     this.#map = map;
-    this.#trustedTools = new Set(options.trustedTools ?? DEFAULT_TRUSTED_TOOLS);
-    this.#trustedPrefixes = prefixes;
+    this.#trusts = trustRule(options);
   }
 
   /** The text to send on for one event from StreamParser. */
@@ -149,13 +93,6 @@ export class StreamRestorer {
     return undefined;
   }
 
-  #trusts(name: string): boolean {
-    return (
-      this.#trustedTools.has(name) ||
-      this.#trustedPrefixes.some((prefix) => name.startsWith(prefix))
-    );
-  }
-
   // Held content never completed a placeholder, so it goes out as it arrived.
   #flush(index: number): string {
     const held = this.#held.get(index);
@@ -164,4 +101,57 @@ export class StreamRestorer {
     const delta = { type: held.kind.delta, [held.kind.field]: held.text };
     return formatEvent('content_block_delta', { type: 'content_block_delta', index, delta });
   }
+}
+
+/** `value` with every string in it restored, object keys included; `value` itself if none changed. */
+function restoreValue(value: unknown, map: TokenMap): unknown {
+  if (typeof value === 'string') return restoreText(value, map);
+  if (Array.isArray(value)) {
+    const items = value.map((item: unknown) => restoreValue(item, map));
+    return items.every((item, i) => item === value[i]) ? value : items;
+  }
+  if (!isRecord(value)) return value;
+  let changed = false;
+  const entries: [string, unknown][] = [];
+  for (const [key, item] of Object.entries(value)) {
+    const restoredKey = restoreText(key, map);
+    const restoredItem = restoreValue(item, map);
+    if (restoredKey !== key || restoredItem !== item) changed = true;
+    entries.push([restoredKey, restoredItem]);
+  }
+  return changed ? Object.fromEntries(entries) : value;
+}
+
+/** One content block of a whole reply, by StreamRestorer's rules; `block` itself if unchanged. */
+function restoreBlock(block: unknown, map: TokenMap, trusts: (name: string) => boolean): unknown {
+  if (!isRecord(block)) return block;
+  if (block.type === 'text' && typeof block.text === 'string') {
+    const text = restoreText(block.text, map);
+    return text === block.text ? block : { ...block, text };
+  }
+  if (block.type === 'tool_use' && typeof block.name === 'string' && trusts(block.name)) {
+    const input = restoreValue(block.input, map);
+    return input === block.input ? block : { ...block, input };
+  }
+  return block;
+}
+
+/**
+ * Puts real values back into a reply that arrived as one JSON body instead of a stream, by the same
+ * rules as StreamRestorer. Strings go back unescaped, because the body is re-serialized as a whole.
+ * Anything that isn't a reply comes back unchanged: at worst a placeholder stays on screen.
+ */
+export function restoreMessage(body: string, map: TokenMap, options: TrustOptions = {}): string {
+  const trusts = trustRule(options);
+  let message: unknown;
+  try {
+    message = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (!isRecord(message) || !Array.isArray(message.content)) return body;
+  const original: unknown[] = message.content;
+  const content = original.map((block) => restoreBlock(block, map, trusts));
+  if (content.every((block, i) => block === original[i])) return body;
+  return JSON.stringify({ ...message, content });
 }

@@ -1,14 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
-import {
-  DEFAULT_TRUSTED_TOOLS,
-  MAX_HOLDBACK_CHARS,
-  StreamRestorer,
-  type RestorerOptions,
-} from '../../src/engine/restore.ts';
+import { MAX_HOLDBACK_CHARS, restoreMessage, StreamRestorer } from '../../src/engine/restore.ts';
 import { TokenMap } from '../../src/engine/token-map.ts';
 import { restoreText } from '../../src/engine/tokenize.ts';
+import { DEFAULT_TRUSTED_TOOLS, type TrustOptions } from '../../src/engine/trust.ts';
 import { cut, delta, parse, recorded, start, stop } from './sse.ts';
 
 const KEY = Uint8Array.from(Array(32).keys());
@@ -43,7 +39,7 @@ const toolBlock = (
   stop(index);
 
 /** `sse` as the restorer sends it on. */
-function restore(sse: string, map = MAP, options: RestorerOptions = {}): string {
+function restore(sse: string, map = MAP, options: TrustOptions = {}): string {
   const restorer = new StreamRestorer(map, options);
   return (
     parse(sse)
@@ -576,6 +572,236 @@ describe('StreamRestorer: tool arguments', () => {
         'EnterWorktree',
         'ExitWorktree',
       ].sort(),
+    );
+  });
+});
+
+/** A whole reply with R5's top-level keys (its non-streaming side calls), holding `content`. */
+const reply = (content: readonly unknown[]) =>
+  JSON.stringify({
+    model: 'claude-haiku-5-5',
+    id: 'msg_01',
+    type: 'message',
+    role: 'assistant',
+    content,
+    container: null,
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    stop_details: null,
+    usage: { input_tokens: 12, output_tokens: 7 },
+    diagnostics: null,
+    context_management: null,
+  });
+
+/** A `type` block calling `name` with `input`. */
+const tool = (name: string | undefined, input: unknown, type = 'tool_use') => ({
+  type,
+  id: 'toolu_01',
+  ...(name === undefined ? {} : { name }),
+  input,
+});
+
+const contentOf = (body: string) =>
+  (JSON.parse(body) as { content: { text?: string; input?: unknown }[] }).content;
+
+/** The oracle: every string in `value` restored, object keys included. */
+const restoreAll = (value: unknown): unknown => {
+  if (typeof value === 'string') return restoreText(value, MAP);
+  if (Array.isArray(value)) return value.map(restoreAll);
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [restoreText(key, MAP), restoreAll(item)]),
+    );
+  }
+  return value;
+};
+
+describe('restoreMessage', () => {
+  test("should restore a placeholder in a reply's text", () => {
+    // Assemble
+    const body = reply([{ type: 'text', text: `Replied OK to ${ONE}.` }]);
+
+    // Act
+    const sent = restoreMessage(body, MAP);
+
+    // Assert: the text is restored and every other key is as it was
+    expect(contentOf(sent)).toEqual([{ type: 'text', text: 'Replied OK to CUST-0001.' }]);
+    expect({ ...(JSON.parse(sent) as object), content: [] }).toEqual({
+      ...(JSON.parse(body) as object),
+      content: [],
+    });
+  });
+
+  test('should leave every field outside content alone', () => {
+    // Assemble: a refusal-style explanation holding a placeholder, next to a text that changes
+    const body = JSON.stringify({
+      ...(JSON.parse(reply([{ type: 'text', text: ONE }])) as object),
+      stop_details: { type: 'refusal', explanation: `About ${ONE}` },
+    });
+
+    // Act
+    const sent = JSON.parse(restoreMessage(body, MAP)) as { stop_details: unknown };
+
+    // Assert
+    expect(sent.stop_details).toEqual({ type: 'refusal', explanation: `About ${ONE}` });
+    expect(contentOf(JSON.stringify(sent))).toEqual([{ type: 'text', text: 'CUST-0001' }]);
+  });
+
+  test('should leave thinking alone', () => {
+    // Assemble
+    const thinking = { type: 'thinking', thinking: `They mean ${ONE}.`, signature: 'c2lnbmVk' };
+
+    // Act
+    const sent = contentOf(restoreMessage(reply([thinking, { type: 'text', text: ONE }]), MAP));
+
+    // Assert
+    expect(sent).toEqual([thinking, { type: 'text', text: 'CUST-0001' }]);
+  });
+
+  test("should restore every string in a trusted tool's nested input", () => {
+    // Assemble
+    const map = new TokenMap(KEY);
+    const original = 'a "quoted" \\ back\nslash';
+    const note = map.issue('pattern:note', 'NOTE', original, original);
+    const input = {
+      command: `echo ${note}`,
+      args: [note, { deep: [`x ${note}`] }],
+      n: 3,
+      ok: true,
+    };
+
+    // Act
+    const sent = contentOf(restoreMessage(reply([tool('Bash', input)]), map));
+
+    // Assert
+    expect(sent[0]?.input).toEqual({
+      command: `echo ${original}`,
+      args: [original, { deep: [`x ${original}`] }],
+      n: 3,
+      ok: true,
+    });
+  });
+
+  test.each([
+    ['WebFetch', tool('WebFetch', { url: `https://example.com/${ONE}` })],
+    ['an unknown tool', tool('SomeNewTool', { id: ONE })],
+    ['a tool_use without a name', tool(undefined, { id: ONE })],
+    ['a server_tool_use named Read', tool('Read', { file_path: ONE }, 'server_tool_use')],
+  ])('should leave untrusted, unnamed and server tool calls alone: %s', (label, block) => {
+    // Assemble
+    const body = reply([block]);
+
+    // Act and Assert
+    expect(restoreMessage(body, MAP)).toBe(body);
+  });
+
+  test('should trust MCP tools only by a configured prefix', () => {
+    // Assemble
+    const options = { trustedPrefixes: ['mcp__plugin_ops_ops__'] };
+    const trusted = reply([tool('mcp__plugin_ops_ops__fetch', { key: ONE })]);
+    const lookalike = reply([tool('mcp__plugin_ops_opsx__fetch', { key: ONE })]);
+
+    // Act
+    const sent = contentOf(restoreMessage(trusted, MAP, options));
+
+    // Assert: the same rule as the streaming path, refusals included
+    expect(sent[0]?.input).toEqual({ key: 'CUST-0001' });
+    expect(restoreMessage(lookalike, MAP, options)).toBe(lookalike);
+    expect(restoreMessage(trusted, MAP)).toBe(trusted);
+    expect(() =>
+      restoreMessage(trusted, MAP, { trustedPrefixes: ['mcp__claude_ai_Notion__'] }),
+    ).toThrow('mcp__claude_ai_Notion__');
+  });
+
+  test('should use a custom trusted list instead of the default', () => {
+    // Assemble
+    const options = { trustedTools: ['Fetcher'] };
+    const read = reply([tool('Read', { file_path: ONE })]);
+
+    // Act
+    const sent = contentOf(restoreMessage(reply([tool('Fetcher', { id: ONE })]), MAP, options));
+
+    // Assert
+    expect(sent[0]?.input).toEqual({ id: 'CUST-0001' });
+    expect(restoreMessage(read, MAP, options)).toBe(read);
+  });
+
+  test('should restore a placeholder used as an object key', () => {
+    // Act
+    const sent = contentOf(
+      restoreMessage(reply([tool('Write', { files: { [ONE]: 'pro', other: TWO } })]), MAP),
+    );
+
+    // Assert
+    expect(sent[0]?.input).toEqual({ files: { 'CUST-0001': 'pro', other: 'CUST-0002' } });
+  });
+
+  test.each([
+    [
+      'padded JSON with plain text',
+      '{ "type": "message",  "content": [ { "type": "text", "text": "All clear." } ] }',
+    ],
+    [
+      'a reply with only thinking',
+      reply([{ type: 'thinking', thinking: `About ${ONE}`, signature: 'c2ln' }]),
+    ],
+    ['an empty content array', reply([])],
+  ])('should return the exact bytes when nothing is restored: %s', (label, body) => {
+    expect(restoreMessage(body, MAP)).toBe(body);
+  });
+
+  test.each([
+    ['not JSON', `event: message_start\ndata: {"x": "${ONE}"}`],
+    ['no content array', `{"type": "message", "content": "${ONE}"}`],
+    ['an error body', `{"type":"error","error":{"type":"overloaded_error","message":"${ONE}"}}`],
+    ['null', 'null'],
+    ['an array', `["${ONE}"]`],
+    ['content items that are not blocks', `{"content": ["${ONE}", 1, null]}`],
+  ])('should return a body that is not a reply unchanged: %s', (label, body) => {
+    expect(restoreMessage(body, MAP)).toBe(body);
+  });
+
+  test('should leave an unissued lookalike alone', () => {
+    // Assemble
+    const body = reply([
+      { type: 'text', text: `see ${LOOKALIKE}` },
+      tool('Read', { file_path: LOOKALIKE, [LOOKALIKE]: [LOOKALIKE] }),
+    ]);
+
+    // Act and Assert
+    expect(restoreMessage(body, MAP)).toBe(body);
+  });
+
+  test('should give the restored input for any input', () => {
+    const piece = fc.constantFrom(
+      ONE,
+      TWO,
+      THREE,
+      LOOKALIKE,
+      'CUST_aaaaaaaaa2',
+      'USA',
+      '"',
+      '\\',
+      '\n',
+      ' ',
+      'é',
+    );
+    const text = fc.array(piece, { maxLength: 8 }).map((pieces) => pieces.join(''));
+    const key = fc.constantFrom('command', 'path', ONE, LOOKALIKE);
+    const { value } = fc.letrec((tie) => ({
+      value: fc.oneof(
+        { depthSize: 'small' },
+        text,
+        fc.integer(),
+        fc.array(tie('value'), { maxLength: 3 }),
+        fc.dictionary(key, tie('value'), { maxKeys: 3 }),
+      ),
+    }));
+    fc.assert(
+      fc.property(fc.dictionary(key, value, { maxKeys: 3 }), (input) => {
+        const sent = contentOf(restoreMessage(reply([tool('Bash', input)]), MAP));
+        return isDeepStrictEqual(sent[0]?.input, restoreAll(input));
+      }),
     );
   });
 });
