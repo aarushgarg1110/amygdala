@@ -81,6 +81,8 @@ describe('tokenizeText', () => {
     expect(restoreText(result.text, map)).toBe('CUST-0001234');
   });
 
+  test.todo("should count a detector whose match was merged into another's placeholder");
+
   test('should keep only the outer span when one span contains another', () => {
     // Assemble: \d{4} finds 0001 inside CUST-0001234
     const map = new TokenMap(KEY);
