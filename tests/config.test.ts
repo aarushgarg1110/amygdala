@@ -184,7 +184,14 @@ describe('parseConfig', () => {
     },
   );
 
-  test.todo('should require the API host itself, not a host containing its name');
+  test.each([
+    ['a longer host ending elsewhere', '["api.anthropic.com.evil.example"]'],
+    ['a host with a prefix', '["xapi.anthropic.com"]'],
+  ])('should require the API host itself, not a host containing its name: %s', (label, hosts) => {
+    expect(refusal(`${DETECTOR}[proxy]\nintercept_hosts = ${hosts}\n`)).toBe(
+      `${FILE}: proxy.intercept_hosts: must include api.anthropic.com, which carries every request`,
+    );
+  });
 
   test('should keep intercept hosts given in any letter case, in lower case', () => {
     const { interceptHosts } = parseConfig(
