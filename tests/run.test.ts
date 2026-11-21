@@ -51,6 +51,12 @@ describe('run', () => {
   );
 });
 
+describe('run init', () => {
+  test.todo('should run init in AMYGDALA_DIR and list it in --help');
+  test.todo('should exit 2 for an unknown init option');
+  test.todo('should exit 1 with the reason when init is refused');
+});
+
 describe('packageVersion', () => {
   test('should read the version field of package.json', () => {
     // Act
