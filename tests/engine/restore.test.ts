@@ -237,3 +237,20 @@ describe('StreamRestorer', () => {
     expect(sent).toEqual([`see ${original}`]);
   });
 });
+
+describe('StreamRestorer: tool arguments', () => {
+  test.todo("should restore a placeholder in a trusted tool's arguments");
+  test.todo('should restore one split across argument chunks at every position');
+  test.todo('should JSON-escape a restored value');
+  test.todo('should give the restored arguments for any chunking');
+  test.todo("should leave untrusted tools' arguments alone");
+  test.todo('should leave unnamed and server tool calls alone');
+  test.todo('should trust MCP tools only by a configured prefix');
+  test.todo("should send held arguments before the block's stop");
+  test.todo('should restore text and arguments in one reply by their own rules');
+  test.todo('should use a custom trusted list instead of the default');
+  test.todo('should send held arguments from end()');
+  test.todo('should leave an unissued lookalike in arguments alone');
+  test.todo('should refuse an MCP prefix that could trust the wrong tools');
+  test.todo('should export the decided default trusted list');
+});
