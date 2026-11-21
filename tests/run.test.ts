@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { KeychainError } from '../src/keychain.ts';
 import { packageVersion, run } from '../src/run.ts';
+import { depsFor } from './deps.ts';
 import { MemoryStore } from './memory-store.ts';
 
 const MANIFEST_VERSION = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
@@ -73,7 +74,7 @@ describe('run init', () => {
     // Act
     const dir = join(parent(), 'data');
     const store = new MemoryStore();
-    const outcome = run(['init'], { env: { AMYGDALA_DIR: dir }, store });
+    const outcome = run(['init'], { env: { AMYGDALA_DIR: dir }, ...depsFor(store) });
 
     // Assert
     expect(outcome.exitCode).toBe(0);
@@ -84,7 +85,7 @@ describe('run init', () => {
 
   test('should exit 2 for an unknown init option', () => {
     const store = new MemoryStore();
-    expect(run(['init', '--force'], { env: {}, store })).toEqual({
+    expect(run(['init', '--force'], { env: {}, ...depsFor(store) })).toEqual({
       exitCode: 2,
       stdout: '',
       stderr: 'amygdala init: unknown option "--force". Run amygdala --help.\n',
@@ -126,7 +127,7 @@ describe('run init', () => {
   ])('should exit 1 with the reason when init is refused: %s', (label, setUp) => {
     // Act
     const { dir, store, reason } = setUp();
-    const outcome = run(['init'], { env: { AMYGDALA_DIR: dir }, store });
+    const outcome = run(['init'], { env: { AMYGDALA_DIR: dir }, ...depsFor(store) });
 
     // Assert
     expect(outcome.exitCode).toBe(1);
@@ -139,9 +140,9 @@ describe('run init', () => {
     store.has = () => {
       throw new Error('a bug');
     };
-    expect(() => run(['init'], { env: { AMYGDALA_DIR: join(parent(), 'd') }, store })).toThrow(
-      'a bug',
-    );
+    expect(() =>
+      run(['init'], { env: { AMYGDALA_DIR: join(parent(), 'd') }, ...depsFor(store) }),
+    ).toThrow('a bug');
   });
 });
 

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { runProcess, type Run } from './process.ts';
 
 /** Where amygdala's key lives. The real one is the macOS Keychain; tests use an in-memory one. */
 export interface SecretStore {
@@ -8,10 +8,14 @@ export interface SecretStore {
   read(account: string): string | undefined;
   /** Stores `secret` for `account`. Throws if one is already there: it never overwrites. */
   add(account: string, secret: string): void;
+  /** Deletes the secret for `account`; nothing stored counts as deleted. */
+  remove(account: string): void;
 }
 
 /** The Keychain's service name for amygdala's keys; the account is the data folder's path. */
 export const KEYCHAIN_SERVICE = 'amygdala';
+/** The host certificate's key: a service of its own, so renewing it can't touch the main key. */
+export const TLS_KEY_SERVICE = 'amygdala-tls';
 const SECURITY = '/usr/bin/security';
 // security's exit statuses, measured on 11-20: no such item; it already exists; a dialog was denied.
 const ITEM_NOT_FOUND = 44;
@@ -28,19 +32,9 @@ export class KeychainError extends Error {
   }
 }
 
-/** Runs `command` with `args`, writing `input` to its stdin. Swappable so tests can record calls. */
-export type Run = (
-  command: string,
-  args: readonly string[],
-  input?: string,
-) => { readonly status: number | null; readonly stdout: string; readonly stderr: string };
-
-const runSecurity: Run = (command, args, input) => {
-  const result = spawnSync(command, args, { input, encoding: 'utf8' });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-};
-
 export interface MacKeychainOptions {
+  /** KEYCHAIN_SERVICE by default. */
+  readonly service?: string;
   /** A keychain file instead of the user's default keychain (tests use a throwaway one). */
   readonly keychain?: string;
   /**
@@ -53,14 +47,16 @@ export interface MacKeychainOptions {
 
 /** The macOS Keychain through `/usr/bin/security`. */
 export class MacKeychain implements SecretStore {
+  readonly #service: string;
   readonly #file: readonly string[];
   readonly #askOnRead: boolean;
   readonly #run: Run;
 
   constructor(options: MacKeychainOptions = {}) {
+    this.#service = options.service ?? KEYCHAIN_SERVICE;
     this.#file = options.keychain === undefined ? [] : [options.keychain];
     this.#askOnRead = options.askOnRead ?? true;
-    this.#run = options.run ?? runSecurity;
+    this.#run = options.run ?? runProcess;
   }
 
   has(account: string): boolean {
@@ -100,9 +96,16 @@ export class MacKeychain implements SecretStore {
     if (result.status !== 0) throw this.#failure('store', result.status);
   }
 
+  remove(account: string): void {
+    const result = this.#run(SECURITY, ['delete-generic-password', ...this.#item(account, [])]);
+    if (result.status !== 0 && result.status !== ITEM_NOT_FOUND) {
+      throw this.#failure('remove', result.status);
+    }
+  }
+
   // security stops reading options at the first plain argument, so the keychain file goes last.
   #item(account: string, options: readonly string[]): string[] {
-    return ['-s', KEYCHAIN_SERVICE, '-a', account, ...options, ...this.#file];
+    return ['-s', this.#service, '-a', account, ...options, ...this.#file];
   }
 
   // The status only: the tool's own message could, in some failure, echo what it was given.
@@ -112,3 +115,14 @@ export class MacKeychain implements SecretStore {
     );
   }
 }
+
+/**
+ * The host certificate's key store: its own service, read without a prompt, because the key is
+ * worth far less than the main key (#41) and the proxy reads it at every start.
+ */
+export const tlsKeyStore = (run?: Run) =>
+  new MacKeychain({
+    service: TLS_KEY_SERVICE,
+    askOnRead: false,
+    ...(run === undefined ? {} : { run }),
+  });

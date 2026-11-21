@@ -191,8 +191,8 @@ function hostsFrom(root: Table): string[] {
   return hosts;
 }
 
-/** The config in `text`, fully checked; `file` only names where it came from in errors. */
-export function parseConfig(text: string, file: string): Config {
+/** The top-level table of the TOML in `text`, its keys checked. */
+function rootOf(text: string, file: string): Table {
   let document: unknown;
   try {
     document = parse(text);
@@ -206,7 +206,12 @@ export function parseConfig(text: string, file: string): Config {
       { cause: error },
     );
   }
-  const root = new Table(file, '', document, ['detectors', 'restore', 'proxy']);
+  return new Table(file, '', document, ['detectors', 'restore', 'proxy']);
+}
+
+/** The config in `text`, fully checked; `file` only names where it came from in errors. */
+export function parseConfig(text: string, file: string): Config {
+  const root = rootOf(text, file);
   return {
     detectors: detectorsFrom(root),
     trust: trustFrom(root),
@@ -214,17 +219,29 @@ export function parseConfig(text: string, file: string): Config {
   };
 }
 
-/** `<dir>/config.toml`, parsed and checked. */
-export function loadConfig(dir: string): Config {
+function readConfig(dir: string): { text: string; file: string } {
   const file = join(dir, CONFIG_FILE);
-  let text: string;
   try {
-    text = readFileSync(file, 'utf8');
+    return { text: readFileSync(file, 'utf8'), file };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new ConfigError(file, 'no config here: run `amygdala init`', { cause: error });
     }
     throw error;
   }
+}
+
+/** `<dir>/config.toml`, parsed and checked. */
+export function loadConfig(dir: string): Config {
+  const { text, file } = readConfig(dir);
   return parseConfig(text, file);
+}
+
+/**
+ * Only the intercept hosts of `<dir>/config.toml`, with the same checks: `init` needs them before
+ * any detector is configured, and a fresh config has none.
+ */
+export function loadInterceptHosts(dir: string): string[] {
+  const { text, file } = readConfig(dir);
+  return hostsFrom(rootOf(text, file));
 }
