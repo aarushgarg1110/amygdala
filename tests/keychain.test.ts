@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { KEYCHAIN_SERVICE, KeychainError, MacKeychain, type Run } from '../src/keychain.ts';
+import { KEYCHAIN_SERVICE, KeychainError, MacKeychain } from '../src/keychain.ts';
+import type { Run } from '../src/process.ts';
 
 const SECRET = 'ab'.repeat(32);
 

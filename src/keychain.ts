@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { runProcess, type Run } from './process.ts';
 
 /** Where amygdala's key lives. The real one is the macOS Keychain; tests use an in-memory one. */
 export interface SecretStore {
@@ -28,18 +28,6 @@ export class KeychainError extends Error {
   }
 }
 
-/** Runs `command` with `args`, writing `input` to its stdin. Swappable so tests can record calls. */
-export type Run = (
-  command: string,
-  args: readonly string[],
-  input?: string,
-) => { readonly status: number | null; readonly stdout: string; readonly stderr: string };
-
-const runSecurity: Run = (command, args, input) => {
-  const result = spawnSync(command, args, { input, encoding: 'utf8' });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-};
-
 export interface MacKeychainOptions {
   /** A keychain file instead of the user's default keychain (tests use a throwaway one). */
   readonly keychain?: string;
@@ -60,7 +48,7 @@ export class MacKeychain implements SecretStore {
   constructor(options: MacKeychainOptions = {}) {
     this.#file = options.keychain === undefined ? [] : [options.keychain];
     this.#askOnRead = options.askOnRead ?? true;
-    this.#run = options.run ?? runSecurity;
+    this.#run = options.run ?? runProcess;
   }
 
   has(account: string): boolean {
