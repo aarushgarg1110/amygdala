@@ -3,6 +3,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
+    // Every test file runs with HOME in a temporary folder (tests/setup.ts).
+    setupFiles: ['tests/setup.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
