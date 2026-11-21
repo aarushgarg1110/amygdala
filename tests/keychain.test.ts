@@ -125,6 +125,8 @@ describe('MacKeychain', () => {
     },
   );
 
+  test.todo('should use the host-key service without a prompt, and remove items');
+
   test.each(['/a "quoted" dir', '/a\\back', '/a\nline'])(
     'should refuse a folder path holding a quote, a backslash or a line break: %j',
     (account) => {
