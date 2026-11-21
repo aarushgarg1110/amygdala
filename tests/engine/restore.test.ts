@@ -579,3 +579,17 @@ describe('StreamRestorer: tool arguments', () => {
     );
   });
 });
+
+describe('restoreMessage', () => {
+  test.todo("should restore a placeholder in a reply's text");
+  test.todo('should leave thinking alone');
+  test.todo("should restore every string in a trusted tool's nested input");
+  test.todo('should leave untrusted, unnamed and server tool calls alone');
+  test.todo('should trust MCP tools only by a configured prefix');
+  test.todo('should use a custom trusted list instead of the default');
+  test.todo('should restore a placeholder used as an object key');
+  test.todo('should return the exact bytes when nothing is restored');
+  test.todo('should return a body that is not a reply unchanged');
+  test.todo('should leave an unissued lookalike alone');
+  test.todo('should give the restored input for any input');
+});
