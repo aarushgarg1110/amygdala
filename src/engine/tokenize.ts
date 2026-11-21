@@ -2,7 +2,10 @@ import type { Detector } from './detector.ts';
 import { MAX_PREFIX } from './placeholder.ts';
 import type { TokenMap } from './token-map.ts';
 
-/** A string with its protected values replaced, and how many each detector replaced. */
+/**
+ * A string with its protected values replaced, and how many matches each detector found, counting
+ * ones merged into another detector's placeholder.
+ */
 export interface Tokenized {
   readonly text: string;
   readonly hits: Readonly<Record<string, number>>;
@@ -23,21 +26,24 @@ interface Claim {
  */
 export const PLACEHOLDER_CANDIDATE = /([A-Z0-9]{2,})_([a-z2-7]{10})/g;
 
-/**
- * Spans from every detector, merged where they overlap so that no character a detector claimed is
- * left in the text: "earliest start wins" would send the tail of the losing span out in the clear.
- */
-function claimsIn(text: string, detectors: readonly Detector[]): Claim[] {
+/** Every span every detector found: earliest start, then longest; an exact tie keeps config order. */
+function spansIn(text: string, detectors: readonly Detector[]): Claim[] {
   const spans = detectors.flatMap((detector) =>
     detector.find(text).map((span) => ({ ...span, detector, exact: true })),
   );
-  // Earliest start, then longest. The sort is stable, so an exact tie keeps config order.
-  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  return spans.sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
+/**
+ * Sorted spans merged where they overlap so that no character a detector claimed is left in the
+ * text: "earliest start wins" would send the tail of the losing span out in the clear.
+ */
+function merge(spans: readonly Claim[]): Claim[] {
   const merged: Claim[] = [];
   for (const span of spans) {
     const last = merged.at(-1);
     if (last === undefined || span.start >= last.end) {
-      merged.push(span);
+      merged.push({ ...span });
     } else if (span.end > last.end) {
       last.end = span.end;
       last.exact = false;
@@ -52,17 +58,19 @@ export function tokenizeText(
   detectors: readonly Detector[],
   map: TokenMap,
 ): Tokenized {
-  const claims = claimsIn(text, detectors);
-  if (claims.length === 0) return { text, hits: {} };
+  const spans = spansIn(text, detectors);
+  if (spans.length === 0) return { text, hits: {} };
+  // Every match counts, even one merged into another detector's placeholder, so a detector whose
+  // hit blocks the request (amygdala's own key) can't be hidden by an overlapping match.
   const hits: Record<string, number> = {};
+  for (const { detector } of spans) hits[detector.name] = (hits[detector.name] ?? 0) + 1;
   let out = '';
   let cursor = 0;
-  for (const claim of claims) {
+  for (const claim of merge(spans)) {
     const original = text.slice(claim.start, claim.end);
     const canonical = claim.exact ? claim.canonical : original;
     out += text.slice(cursor, claim.start);
     out += map.issue(claim.detector.name, claim.detector.prefix, canonical, original);
-    hits[claim.detector.name] = (hits[claim.detector.name] ?? 0) + 1;
     cursor = claim.end;
   }
   return { text: out + text.slice(cursor), hits };

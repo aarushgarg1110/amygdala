@@ -74,11 +74,27 @@ describe('tokenizeText', () => {
     // Act
     const result = tokenizeText('CUST-0001234', detectors, map);
 
-    // Assert: one placeholder for all 12 characters, under the earliest detector
+    // Assert: one placeholder for all 12 characters, under the earliest detector; both matched
     expect(result.text).toBe(placeholderFor(KEY, 'pattern:customer-id', 'CUST', 'CUST-0001234'));
     expect(result.text).not.toContain('234');
-    expect(result.hits).toEqual({ 'pattern:customer-id': 1 });
+    expect(result.hits).toEqual({ 'pattern:customer-id': 1, 'pattern:seven-digits': 1 });
     expect(restoreText(result.text, map)).toBe('CUST-0001234');
+  });
+
+  test("should count a detector whose match was merged into another's placeholder", () => {
+    // Assemble: the seven digits sit inside the customer ID, then once more on their own
+    const detectors = buildDetectors([CUSTOMER_ID, SEVEN_DIGITS]);
+    const text = 'CUST-0001234 and 7654321';
+
+    // Act
+    const result = tokenizeText(text, detectors, new TokenMap(KEY));
+
+    // Assert: the text has two placeholders, and each detector's every match is counted
+    expect(result.text).toBe(
+      `${placeholderFor(KEY, 'pattern:customer-id', 'CUST', 'CUST-0001234')} and ` +
+        placeholderFor(KEY, 'pattern:seven-digits', 'NUM', '7654321'),
+    );
+    expect(result.hits).toEqual({ 'pattern:customer-id': 1, 'pattern:seven-digits': 2 });
   });
 
   test('should keep only the outer span when one span contains another', () => {
@@ -93,9 +109,9 @@ describe('tokenizeText', () => {
     // Act
     const result = tokenizeText('CUST-0001234', buildDetectors([CUSTOMER_ID, inner]), map);
 
-    // Assert: the outer span keeps its own canonical form
+    // Assert: the outer span keeps its own canonical form; the inner match is still counted
     expect(result.text).toBe(placeholderFor(KEY, 'pattern:customer-id', 'CUST', 'CUST-0001234'));
-    expect(result.hits).toEqual({ 'pattern:customer-id': 1 });
+    expect(result.hits).toEqual({ 'pattern:customer-id': 1, 'pattern:four-digits': 1 });
   });
 
   test('should prefer the longer span when two spans start together', () => {
@@ -106,9 +122,9 @@ describe('tokenizeText', () => {
     // Act
     const result = tokenizeText('CUST-0001234', buildDetectors([short, CUSTOMER_ID]), map);
 
-    // Assert: the longer span wins, with its own detector and canonical form
+    // Assert: the longer span wins, with its own detector and canonical form; both are counted
     expect(result.text).toBe(placeholderFor(KEY, 'pattern:customer-id', 'CUST', 'CUST-0001234'));
-    expect(result.hits).toEqual({ 'pattern:customer-id': 1 });
+    expect(result.hits).toEqual({ 'pattern:customer-id': 1, 'pattern:short-customer': 1 });
   });
 
   test.each([
