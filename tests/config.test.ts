@@ -184,6 +184,8 @@ describe('parseConfig', () => {
     },
   );
 
+  test.todo('should require the API host itself, not a host containing its name');
+
   test('should keep intercept hosts given in any letter case, in lower case', () => {
     const { interceptHosts } = parseConfig(
       `${DETECTOR}[proxy]\nintercept_hosts = ["API.Anthropic.com", "claude.ai"]\n`,
