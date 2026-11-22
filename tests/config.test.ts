@@ -253,6 +253,10 @@ describe('parseConfig', () => {
   });
 });
 
+describe('parseConfig: proxy port', () => {
+  test.todo('should accept a port from 1024 to 65535, defaulting to 47070, and refuse others');
+});
+
 describe('loadConfig', () => {
   const dirs: string[] = [];
   const tempDir = () => {
