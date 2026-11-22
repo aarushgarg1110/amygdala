@@ -95,7 +95,11 @@ describe('parseConfig', () => {
       `${DETECTOR}[restore]\ntrusted = []\n`,
       'restore.trusted: unknown key',
     ],
-    ['an unknown proxy key', `${DETECTOR}[proxy]\nport = 1\n`, 'proxy.port: unknown key'],
+    [
+      'an unknown proxy key',
+      `${DETECTOR}[proxy]\nlisten = "0.0.0.0"\n`,
+      'proxy.listen: unknown key',
+    ],
   ])('should refuse an unknown key, naming its path: %s', (label, text, message) => {
     expect(refusal(text)).toBe(`${FILE}: ${message}`);
   });
@@ -250,6 +254,27 @@ describe('parseConfig', () => {
 
   test('should refuse an empty file', () => {
     expect(refusal('')).toBe(`${FILE}: no detectors configured: add a [[detectors]] entry`);
+  });
+});
+
+describe('parseConfig: proxy port', () => {
+  test.each([
+    ['the default', '', 47_070],
+    ['the lowest', 'port = 1024\n', 1024],
+    ['the dev sandbox', 'port = 47071\n', 47_071],
+    ['the highest', 'port = 65535\n', 65_535],
+  ])('should accept a port from 1024 to 65535, defaulting to 47070: %s', (label, line, port) => {
+    expect(parseConfig(`${DETECTOR}[proxy]\n${line}`, FILE).port).toBe(port);
+  });
+
+  test.each([
+    ['0', 'port = 0', 'must be from 1024 to 65535'],
+    ['80, which needs root', 'port = 80', 'must be from 1024 to 65535'],
+    ['70000', 'port = 70000', 'must be from 1024 to 65535'],
+    ['a string', 'port = "47070"', 'must be a whole number'],
+    ['a fraction', 'port = 47070.5', 'must be a whole number'],
+  ])('should refuse any other port, naming the key: %s', (label, line, message) => {
+    expect(refusal(`${DETECTOR}[proxy]\n${line}\n`)).toBe(`${FILE}: proxy.port: ${message}`);
   });
 });
 
