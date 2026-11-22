@@ -1,95 +1,30 @@
 import { spawn } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { CA_FILE } from '../src/cert-store.ts';
 import { CONFIG_FILE } from '../src/config.ts';
 import { ownKeyEncodings } from '../src/engine/detectors/own-key.ts';
-import { init } from '../src/init.ts';
 import { KeychainError } from '../src/keychain.ts';
-import { EXIT_NOT_RUNNING, main, processSignals, stderrLine, type MainDeps } from '../src/run.ts';
-import { CONTROL_SOCKET, queryStatus, serve } from '../src/serve.ts';
-import { MINTER } from './deps.ts';
+import { EXIT_NOT_RUNNING, main, processSignals, stderrLine } from '../src/run.ts';
+import { queryStatus, serve } from '../src/serve.ts';
 import {
   CLEANUP,
   cleanup,
+  dataFolder,
+  type Folder,
   ID,
-  localForwarder,
+  listening,
+  mainDeps,
   modelRequest,
+  reads,
   secureThrough,
   send,
-  upstream,
 } from './harness.ts';
 import { MemoryStore } from './memory-store.ts';
 
 afterEach(cleanup);
-
-const CONFIG = (port: number) => `[[detectors]]
-kind = "pattern"
-name = "customer-id"
-prefix = "CUST"
-pattern = 'CUST-\\d{4,}'
-
-[proxy]
-port = ${String(port)}
-`;
-
-/** A port nothing listens on right now. */
-async function freePort(): Promise<number> {
-  const probe = net.createServer();
-  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
-  const { port } = probe.address() as net.AddressInfo;
-  await new Promise((resolve) => probe.close(resolve));
-  return port;
-}
-
-/** Whether anything accepts connections on `port` of localhost. */
-const listening = (port: number) =>
-  new Promise<boolean>((resolve) => {
-    const socket = net.connect(port, '127.0.0.1');
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => {
-      resolve(false);
-    });
-  });
-
-/** A data folder set up by init, its config holding the customer-id detector and a free port. */
-async function dataFolder() {
-  const dir = mkdtempSync(join(tmpdir(), 'amyg-'));
-  CLEANUP.push(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const store = new MemoryStore();
-  const tlsKeys = new MemoryStore();
-  init(dir, { store, tlsKeys, minter: MINTER });
-  const port = await freePort();
-  writeFileSync(join(dir, CONFIG_FILE), CONFIG(port));
-  const up = await upstream((request, response) => response.end('ok'));
-  const lines: string[] = [];
-  const deps = {
-    store,
-    tlsKeys,
-    version: 'test',
-    log: (line: string) => lines.push(line),
-    forward: localForwarder(up.port),
-  };
-  return { dir, port, store, up, lines, deps, socket: join(dir, CONTROL_SOCKET) };
-}
-
-type Folder = Awaited<ReturnType<typeof dataFolder>>;
 
 async function started(folder: Folder, deps: Partial<Folder['deps']> = {}) {
   const running = await serve(folder.dir, { ...folder.deps, ...deps });
@@ -102,26 +37,6 @@ async function through(folder: Folder, path: string, body: object) {
   const ca = readFileSync(join(folder.dir, CA_FILE), 'utf8');
   const secure = await secureThrough(folder.port, ca);
   return send(secure, { method: 'POST', path }, Buffer.from(JSON.stringify(body)));
-}
-
-const reads = (store: MemoryStore) => store.calls.filter((call) => call.startsWith('read ')).length;
-
-/** main's dependencies for `folder`, with signals handed to the test instead of the process. */
-function mainDeps(
-  folder: Folder,
-  onSignals: MainDeps['onSignals'] = () => undefined,
-  { local = true } = {},
-): MainDeps {
-  return {
-    env: { AMYGDALA_DIR: folder.dir },
-    store: folder.store,
-    tlsKeys: folder.deps.tlsKeys,
-    minter: MINTER,
-    log: folder.deps.log,
-    // Without it serve would forward to the real hosts; only refused starts leave it out.
-    ...(local ? { forward: folder.deps.forward } : {}),
-    onSignals,
-  };
 }
 
 /** A socket at `path` left behind by a process that was killed. */
