@@ -17,6 +17,14 @@ export type RequestHandler = (
   target: Target,
 ) => void;
 
+/** Sends a request upstream: its own body, or `body` when a handler has already read and changed it. */
+export type Forward = (
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  target: Target,
+  body?: Buffer,
+) => void;
+
 // Hop-by-hop headers describe one connection, so they never cross the proxy.
 const HOP_BY_HOP = new Set([
   'connection',
@@ -55,14 +63,19 @@ export interface ForwardOptions {
  * back as it arrives. The upstream is checked against the target's name before anything is sent,
  * and one that fails gets a 502.
  */
-export function forwarder(options: ForwardOptions = {}): RequestHandler {
+export function forwarder(options: ForwardOptions = {}): Forward {
   const agent = new https.Agent({
     keepAlive: true,
     ca: [...(options.upstreamCa ?? defaultUpstreamCa())],
   });
   const resolve = options.resolve ?? ((target: Target) => target);
-  return (request, response, target) => {
+  return (request, response, target, body) => {
     const to = resolve(target);
+    const headers = withoutHopByHop(request.headers);
+    // A replaced body has its own length; a request that had no body doesn't gain the header.
+    if (body !== undefined && (body.length > 0 || headers['content-length'] !== undefined)) {
+      headers['content-length'] = String(body.length);
+    }
     const upstream = https.request({
       host: to.host,
       port: to.port,
@@ -70,7 +83,7 @@ export function forwarder(options: ForwardOptions = {}): RequestHandler {
       checkServerIdentity: (name, cert) => tls.checkServerIdentity(target.host, cert),
       method: request.method,
       path: request.url,
-      headers: withoutHopByHop(request.headers),
+      headers,
       agent,
     });
     upstream.on('response', (reply: UpstreamReply) => {
@@ -82,7 +95,8 @@ export function forwarder(options: ForwardOptions = {}): RequestHandler {
       if (response.headersSent) response.destroy();
       else response.writeHead(502).end();
     });
-    request.pipe(upstream);
+    if (body === undefined) request.pipe(upstream);
+    else upstream.end(body);
   };
 }
 

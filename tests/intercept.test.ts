@@ -1,69 +1,27 @@
-import { createPrivateKey, X509Certificate } from 'node:crypto';
+import { X509Certificate } from 'node:crypto';
 import http from 'node:http';
-import https from 'node:https';
 import net from 'node:net';
 import { Duplex } from 'node:stream';
 import tls from 'node:tls';
 import { afterEach, describe, expect, test } from 'vitest';
-import type { Certificates } from '../src/certs.ts';
-import {
-  createInterceptor,
-  defaultUpstreamCa,
-  forwarder,
-  type RequestHandler,
-} from '../src/intercept.ts';
-import { startProxy } from '../src/proxy.ts';
+import { defaultUpstreamCa, forwarder, type RequestHandler } from '../src/intercept.ts';
 import { MINTER } from './deps.ts';
+import {
+  cleanup,
+  CLEANUP,
+  connectTo,
+  handshake,
+  HOST,
+  localForwarder,
+  PROXY_CERTS,
+  proxyWith,
+  secureThrough,
+  send,
+  UPSTREAM_CERTS,
+  upstream,
+} from './harness.ts';
 
-const HOST = 'api.anthropic.com';
-const CLEANUP: (() => unknown)[] = [];
-afterEach(async () => {
-  for (const undo of CLEANUP.splice(0).reverse()) await undo();
-});
-
-const keyPem = (set: Certificates) =>
-  createPrivateKey({ key: Buffer.from(set.keyDer), format: 'der', type: 'pkcs8' })
-    .export({ type: 'pkcs8', format: 'pem' })
-    .toString();
-
-// init's certificates (the client trusts their CA) and the "real" upstream's, from another CA.
-const PROXY_CERTS = MINTER.mint([HOST]);
-const UPSTREAM_CERTS = MINTER.mint([HOST]);
-
-/** A local stand-in for the real host, recording what reaches it. */
-async function upstream(answer: http.RequestListener, certs = UPSTREAM_CERTS) {
-  const seen: {
-    method: string | undefined;
-    headers: http.IncomingHttpHeaders;
-    body: Buffer;
-    servername: unknown;
-  }[] = [];
-  const server = https.createServer(
-    { key: keyPem(certs), cert: certs.certPem },
-    (request, response) => {
-      const chunks: Buffer[] = [];
-      request.on('data', (chunk: Buffer) => chunks.push(chunk));
-      request.on('end', () => {
-        seen.push({
-          method: request.method,
-          headers: request.headers,
-          body: Buffer.concat(chunks),
-          servername: (request.socket as tls.TLSSocket).servername,
-        });
-        answer(request, response);
-      });
-    },
-  );
-  let connections = 0;
-  server.on('connection', () => (connections += 1));
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  CLEANUP.push(() => new Promise((resolve) => server.close(resolve)));
-  return {
-    port: (server.address() as net.AddressInfo).port,
-    seen,
-    connections: () => connections,
-  };
-}
+afterEach(cleanup);
 
 /** A TCP relay to `port` that can cut its connections from the proxy (FIN or RST) on demand. */
 async function cuttingRelay(port: number) {
@@ -93,63 +51,10 @@ async function proxy(
   handler?: RequestHandler | 'default',
   { host = HOST, certs = PROXY_CERTS } = {},
 ) {
-  const intercept = createInterceptor({
-    keyPem: keyPem(certs),
-    certPem: certs.certPem,
-    ...(handler === 'default'
-      ? {}
-      : {
-          handler:
-            handler ??
-            forwarder({
-              upstreamCa: [UPSTREAM_CERTS.caPem],
-              resolve: () => ({ host: '127.0.0.1', port }),
-            }),
-        }),
+  return proxyWith(handler === 'default' ? undefined : (handler ?? localForwarder(port)), {
+    hosts: [host],
+    certs,
   });
-  // Records the early bytes each CONNECT arrived with.
-  const heads: number[] = [];
-  const started = await startProxy({
-    interceptHosts: [host],
-    intercept: (target, targetPort, client, head) => {
-      heads.push(head.length);
-      intercept(target, targetPort, client, head);
-    },
-  });
-  CLEANUP.push(() => started.close());
-  return { port: started.port, heads };
-}
-
-const connectTo = (host: string, port: number) =>
-  `CONNECT ${host}:${String(port)} HTTP/1.1\r\nHost: ${host}:${String(port)}\r\n\r\n`;
-
-async function handshake(secure: tls.TLSSocket) {
-  await new Promise<void>((resolve, reject) => {
-    secure.once('secureConnect', resolve);
-    secure.once('error', reject);
-  });
-  CLEANUP.push(() => secure.destroy());
-  return secure;
-}
-
-/** CONNECT through the proxy, then TLS to `host` trusting `ca`. */
-async function secureThrough(
-  proxyPort: number,
-  ca = PROXY_CERTS.caPem,
-  alpn?: string[],
-  { host = HOST, port = 443 } = {},
-) {
-  const raw = net.connect(proxyPort, '127.0.0.1');
-  await new Promise<void>((resolve, reject) => {
-    raw.once('error', reject);
-    raw.write(connectTo(host, port));
-    raw.once('data', () => {
-      resolve();
-    });
-  });
-  return handshake(
-    tls.connect({ socket: raw, servername: host, ca, ...(alpn ? { ALPNProtocols: alpn } : {}) }),
-  );
 }
 
 /**
@@ -182,36 +87,6 @@ async function secureWithEarlyBytes(proxyPort: number) {
     bridge.push(pending.subarray(end + 4));
   });
   return handshake(tls.connect({ socket: bridge, servername: HOST, ca: PROXY_CERTS.caPem }));
-}
-
-/** One HTTP request over `secure`, resolving with the reply and its body. */
-function send(
-  secure: tls.TLSSocket,
-  options: http.RequestOptions,
-  body?: Buffer,
-  onChunk?: () => void,
-) {
-  return new Promise<{ reply: http.IncomingMessage; body: Buffer }>((resolve, reject) => {
-    const request = http.request(
-      {
-        ...options,
-        headers: { host: HOST, ...(options.headers as http.OutgoingHttpHeaders | undefined) },
-        createConnection: () => secure,
-      },
-      (reply) => {
-        const chunks: Buffer[] = [];
-        reply.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-          onChunk?.();
-        });
-        reply.on('end', () => {
-          resolve({ reply, body: Buffer.concat(chunks) });
-        });
-      },
-    );
-    request.on('error', reject);
-    request.end(body);
-  });
 }
 
 describe('createInterceptor', () => {
