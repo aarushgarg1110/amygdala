@@ -5,6 +5,8 @@ import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import type { Certificates } from '../src/certs.ts';
+import { buildDetectors } from '../src/engine/detector.ts';
+import { TokenMap } from '../src/engine/token-map.ts';
 import { createInterceptor, forwarder, type RequestHandler } from '../src/intercept.ts';
 import { startProxy } from '../src/proxy.ts';
 import { MINTER } from './deps.ts';
@@ -154,4 +156,65 @@ export function send(
     request.on('error', reject);
     request.end(body);
   });
+}
+
+// Synthetic protected values: a customer-id pattern and a fixed test key.
+export const KEY = Uint8Array.from(Array(32).keys());
+export const CUSTOMER = 'pattern:customer-id';
+export const DETECTORS = buildDetectors([
+  { kind: 'pattern', name: 'customer-id', prefix: 'CUST', pattern: 'CUST-\\d{4,}' },
+]);
+export const ID = 'CUST-0001';
+export const PLACEHOLDER = new TokenMap(KEY).issue(CUSTOMER, 'CUST', ID, ID);
+
+/** A model request mentioning `id` in five places: system, user text, reply, tool call, tool result. */
+export const modelRequest = (id: string) => ({
+  model: 'claude-haiku-5-5',
+  max_tokens: 1024,
+  stream: true,
+  system: [{ type: 'text', text: `You help with ${id}.` }],
+  messages: [
+    { role: 'user', content: [{ type: 'text', text: `Look up ${id}` }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: `Reading ${id} now.` },
+        { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: `/data/${id}.csv` } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: `${id},42` }],
+    },
+  ],
+});
+
+export interface Call {
+  readonly host?: string;
+  readonly method?: string;
+  readonly path?: string;
+  readonly headers?: Record<string, string>;
+  readonly body?: string | Buffer | object | undefined;
+}
+
+const bytesOf = (body: Call['body']) =>
+  body === undefined
+    ? undefined
+    : Buffer.isBuffer(body)
+      ? body
+      : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+
+/** One request through the proxy, by default a model request to api.anthropic.com. */
+export async function call(port: number, call: Call = {}) {
+  const host = call.host ?? HOST;
+  const secure = await secureThrough(port, undefined, undefined, { host });
+  return send(
+    secure,
+    {
+      method: call.method ?? 'POST',
+      path: call.path ?? '/v1/messages?beta=true',
+      headers: { host, ...call.headers },
+    },
+    bytesOf(call.body),
+  );
 }
