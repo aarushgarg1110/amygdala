@@ -140,7 +140,7 @@ async function claim(control: net.Server, socket: string, dir: string): Promise<
 }
 
 /** Resolves when `port` on the listen address can be bound, so the key is read only if it is. */
-async function portFree(port: number): Promise<void> {
+export async function portFree(port: number): Promise<void> {
   const probe = net.createServer();
   try {
     await listen(probe, { port, host: LISTEN_HOST });
