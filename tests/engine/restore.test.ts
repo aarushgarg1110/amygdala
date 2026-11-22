@@ -182,33 +182,28 @@ describe('StreamRestorer', () => {
     expect(textDeltas(events.map((e) => e.raw).join(''))).toEqual(['see ', 'CUST_ggf']);
   });
 
-  test('should hold back a trailing uppercase run and send it with the next delta', () => {
-    expect(textDeltas(restore(textBlock(0, ['in the USA', ' today'])))).toEqual([
-      'in the ',
-      'USA today',
-    ]);
-  });
-
   test.each([
-    ['an 11-character run', 'x ABCDEFGHIJK', ['x A', 'BCDEFGHIJK']],
+    ['the longest start, 20 characters', 'x ABCDEFGHIJ_ggfrgflzu', ['x ', 'ABCDEFGHIJ_ggfrgflzu']],
     [
-      'a 20-character partial placeholder',
-      'x ABCDEFGHIJ_ggfrgflzu',
-      ['x ', 'ABCDEFGHIJ_ggfrgflzu'],
+      'one character more: a whole placeholder shape',
+      'x ABCDEFGHIJ_ggfrgflzua',
+      ['x ABCDEFGHIJ_ggfrgflzua'],
     ],
-    ['one character more', 'x ABCDEFGHIJK_ggfrgflzu', ['x A', 'BCDEFGHIJK_ggfrgflzu']],
   ])('should hold back at most MAX_HOLDBACK_CHARS: %s', (label, text, sent) => {
+    // Assemble: a ten-character prefix, the longest there is, has been issued
+    const map = new TokenMap(KEY);
+    map.issue('pattern:long', 'ABCDEFGHIJ', 'v', 'v');
+
+    // Act and Assert
     expect(MAX_HOLDBACK_CHARS).toBe(20);
-    expect(textDeltas(restore(textBlock(0, [text])))).toEqual(sent);
+    expect(textDeltas(restore(textBlock(0, [text]), map))).toEqual(sent);
   });
 
-  // read-tool-reply ends one text chunk in "**C" and read-tool-prompt one Bash chunk in "2>&1":
-  // both are held and sent with the next chunk, so those two events are rewritten.
+  // read-tool-reply ends one text chunk in "**C", which could start CUST_, so that chunk is held.
   test.each([
-    ...['text-reply', 'read-tool-result', 'thread-first', 'thread-delta'].map((scenario) => [
-      scenario,
-      recorded(scenario),
-    ]),
+    ...['text-reply', 'read-tool-prompt', 'read-tool-result', 'thread-first', 'thread-delta'].map(
+      (scenario) => [scenario, recorded(scenario)],
+    ),
     ['a text block with no deltas', textBlock(0, [])],
   ])('should forward a delta with nothing to restore byte for byte: %s', (label, sse) => {
     expect(restore(sse)).toBe(sse);
@@ -234,7 +229,9 @@ describe('StreamRestorer', () => {
   });
 
   test('should forward a fully held delta with empty text', () => {
-    expect(textDeltas(restore(textBlock(0, ['A', 'B c'])))).toEqual(['', 'AB c']);
+    const map = new TokenMap(KEY);
+    map.issue('pattern:abc', 'ABC', 'v', 'v');
+    expect(textDeltas(restore(textBlock(0, ['A', 'B c']), map))).toEqual(['', 'AB c']);
   });
 
   test('should leave thinking and signatures alone', () => {
@@ -615,6 +612,110 @@ const restoreAll = (value: unknown): unknown => {
   }
   return value;
 };
+
+describe('StreamRestorer: hold-back', () => {
+  const RECORDINGS = [
+    'text-reply',
+    'read-tool-prompt',
+    'read-tool-result',
+    'read-tool-reply',
+    'thread-first',
+    'thread-delta',
+  ];
+
+  test.each(RECORDINGS)(
+    'should pass every recording through byte for byte when nothing is issued: %s',
+    (scenario) => {
+      const sse = recorded(scenario);
+      expect(restore(sse, new TokenMap(KEY))).toBe(sse);
+    },
+  );
+
+  test.each([
+    ['a digit', textBlock(0, ['ran it 2>&1', ' quietly'])],
+    ['capitals no prefix starts', textBlock(0, ['in the USA', ' today'])],
+    ['tool arguments ending in a digit', toolBlock(0, 'Bash', ['{"command": "make 2>&1', '"}'])],
+  ])('should send at once an end no issued prefix could start: %s', (label, sse) => {
+    expect(restore(sse)).toBe(sse);
+  });
+
+  test.each([
+    ['**C', ['see **C', 'UT then'], ['see **', 'CUT then']],
+    ['CU', ['see CU', 'P then'], ['see ', 'CUP then']],
+    ['CUST', ['see CUST', 'OM then'], ['see ', 'CUSTOM then']],
+    ['CUST_', ['see CUST_', 'x then'], ['see ', 'CUST_x then']],
+    [
+      'CUST_ and three token characters',
+      [`see ${ONE.slice(0, 8)}`, ' then'],
+      ['see ', `${ONE.slice(0, 8)} then`],
+    ],
+  ])(
+    'should hold an end that could still become an issued placeholder: %s',
+    (label, chunks, sent) => {
+      expect(textDeltas(restore(textBlock(0, chunks)))).toEqual(sent);
+    },
+  );
+
+  test.each([
+    ['ending in a letter', ONE, 'CUST-0001'],
+    ['ending in a base32 digit', THREE, 'CUST-0003'],
+  ])(
+    'should never send a piece of an issued placeholder early, wherever it is split: %s',
+    (label, placeholder, id) => {
+      const text = `Pay ${placeholder} now`;
+      const splits = [
+        ...Array.from({ length: text.length - 1 }, (unused, i) => [
+          text.slice(0, i + 1),
+          text.slice(i + 1),
+        ]),
+        text.split(''),
+      ];
+      for (const chunks of splits) {
+        const sent = textDeltas(restore(textBlock(0, chunks)));
+        expect(sent.join('')).toBe(`Pay ${id} now`);
+        // A delta holding "_" would be a piece of the placeholder sent before it could be restored.
+        expect(sent.filter((piece) => piece.includes('_'))).toEqual([]);
+      }
+    },
+  );
+
+  test("should restore at once a placeholder that ends a block's last delta", () => {
+    expect(textDeltas(restore(textBlock(0, [`see ${ONE}`])))).toEqual(['see CUST-0001']);
+  });
+
+  test('should send the capitals before a placeholder at once', () => {
+    const sent = textDeltas(restore(textBlock(0, ['see IDCU', `${ONE.slice(2)} ok`])));
+    expect(sent).toEqual(['see ID', 'CUST-0001 ok']);
+  });
+
+  test('should hold the longest possible start when one prefix ends another', () => {
+    // Assemble: ST ends CUST, so "ST_…" inside "CUST_…" could be mistaken for the start
+    const map = new TokenMap(KEY);
+    const placeholder = map.issue('pattern:customer-id', 'CUST', 'CUST-0001', 'CUST-0001');
+    map.issue('pattern:site', 'ST', 'ST-1', 'ST-1');
+
+    // Act
+    const sent = textDeltas(
+      restore(textBlock(0, ['see CUST_', `${placeholder.slice(5)} ok`]), map),
+    );
+
+    // Assert
+    expect(sent.join('')).toBe('see CUST-0001 ok');
+  });
+
+  test('should send a held end that never completes unchanged', () => {
+    expect(textDeltas(restore(textBlock(0, ['see CUST_ab', ' done'])))).toEqual([
+      'see ',
+      'CUST_ab done',
+    ]);
+  });
+
+  test("should still hold a recording's end that could start an issued prefix", () => {
+    const sse = recorded('read-tool-reply');
+    expect(textDeltas(sse).some((piece) => piece.endsWith('**C'))).toBe(true);
+    expect(textDeltas(restore(sse)).some((piece) => piece.endsWith('**C'))).toBe(false);
+  });
+});
 
 describe('restoreMessage', () => {
   test("should restore a placeholder in a reply's text", () => {

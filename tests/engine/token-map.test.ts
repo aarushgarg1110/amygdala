@@ -34,6 +34,20 @@ describe('TokenMap', () => {
     expect(map.size).toBe(1);
   });
 
+  test('should list the prefix of every placeholder it issued, once each', () => {
+    const map = new TokenMap(KEY);
+    map.issue(DETECTOR, 'CUST', 'CUST-0001', 'CUST-0001');
+    map.issue(DETECTOR, 'CUST', 'CUST-0002', 'CUST-0002');
+    map.issue('builtin:own-key', 'KEY', 'own-key', 'k');
+    expect([...map.prefixes]).toEqual(['CUST', 'KEY']);
+  });
+
+  test('should take a prefix from the issued placeholder, not the argument', () => {
+    const map = new TokenMap(KEY, () => 'NOTE_aaaaaaaaaa');
+    map.issue(DETECTOR, 'CUST', 'CUST-0001', 'CUST-0001');
+    expect([...map.prefixes]).toEqual(['NOTE']);
+  });
+
   test('should return undefined for a placeholder it never issued', () => {
     expect(new TokenMap(KEY).original('CUST_aaaaaaaaaa')).toBeUndefined();
   });
