@@ -21,6 +21,7 @@ interface Entry {
 /** Placeholder -> the real value it stands for. Memory only; it never prints its values. */
 export class TokenMap {
   readonly #entries = new Map<string, Entry>();
+  readonly #prefixes = new Set<string>();
   readonly #key: Uint8Array;
   readonly #derive: Derive;
 
@@ -35,6 +36,8 @@ export class TokenMap {
     const existing = this.#entries.get(placeholder);
     if (existing === undefined) {
       this.#entries.set(placeholder, { detector, canonical, original });
+      // Read from what was issued, not the argument: that is what a reply can repeat.
+      this.#prefixes.add(placeholder.replace(/_.*$/s, ''));
     } else if (existing.detector !== detector || existing.canonical !== canonical) {
       throw new PlaceholderCollisionError(placeholder);
     }
@@ -48,6 +51,11 @@ export class TokenMap {
 
   get size(): number {
     return this.#entries.size;
+  }
+
+  /** The prefixes of every placeholder issued so far ("CUST", "KEY"): config names, never values. */
+  get prefixes(): ReadonlySet<string> {
+    return this.#prefixes;
   }
 
   toJSON(): { size: number } {
