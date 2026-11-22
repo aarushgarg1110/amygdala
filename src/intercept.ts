@@ -1,0 +1,112 @@
+import http from 'node:http';
+import https from 'node:https';
+import tls from 'node:tls';
+import type { Intercept } from './proxy.ts';
+
+/** Where a decrypted request was headed. */
+export interface Target {
+  readonly host: string;
+  readonly port: number;
+}
+
+/** Answers one decrypted request: the default forwards it; B3's rewrites, restores or blocks. */
+export type RequestHandler = (
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  target: Target,
+) => void;
+
+// Hop-by-hop headers describe one connection, so they never cross the proxy.
+const HOP_BY_HOP = new Set([
+  'connection',
+  'proxy-connection',
+  'keep-alive',
+  'transfer-encoding',
+  'upgrade',
+  'te',
+  'trailer',
+]);
+
+/** `headers` without hop-by-hop ones; everything else passes, `anthropic-beta` included (R1). */
+export function withoutHopByHop(headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !HOP_BY_HOP.has(name.toLowerCase())),
+  );
+}
+
+/** What an upstream certificate must chain to: the system store (with any TLS-inspection root) and Node's bundled CAs. */
+export const defaultUpstreamCa = (): string[] => [
+  ...tls.getCACertificates('bundled'),
+  ...tls.getCACertificates('system'),
+];
+
+export interface ForwardOptions {
+  readonly upstreamCa?: readonly string[];
+  /** Where to connect for a target: the target itself by default; tests point it at localhost. */
+  readonly resolve?: (target: Target) => Target;
+}
+
+/**
+ * The pass-through handler: the request goes to the real host unchanged and the reply streams
+ * back as it arrives. The upstream is checked against the target's name before anything is sent,
+ * and one that fails gets a 502.
+ */
+export function forwarder(options: ForwardOptions = {}): RequestHandler {
+  const agent = new https.Agent({
+    keepAlive: true,
+    ca: [...(options.upstreamCa ?? defaultUpstreamCa())],
+  });
+  const resolve = options.resolve ?? ((target: Target) => target);
+  return (request, response, target) => {
+    const to = resolve(target);
+    const upstream = https.request({
+      host: to.host,
+      port: to.port,
+      servername: target.host,
+      checkServerIdentity: (name, cert) => tls.checkServerIdentity(target.host, cert),
+      method: request.method,
+      path: request.url,
+      headers: withoutHopByHop(request.headers),
+      agent,
+    });
+    upstream.on('response', (reply) => {
+      response.writeHead(reply.statusCode ?? 502, withoutHopByHop(reply.headers));
+      reply.pipe(response);
+    });
+    upstream.on('error', () => {
+      if (response.headersSent) response.destroy();
+      else response.writeHead(502).end();
+    });
+    request.pipe(upstream);
+  };
+}
+
+export interface InterceptOptions {
+  /** `init`'s host certificate and key (loadCertificates). */
+  readonly keyPem: string;
+  readonly certPem: string;
+  readonly handler?: RequestHandler;
+}
+
+/**
+ * B2a's hook for intercept hosts: answers the CONNECT, terminates TLS with the host certificate,
+ * offering HTTP/1.1 only, and gives each decrypted request to the handler.
+ */
+export function createInterceptor(options: InterceptOptions): Intercept {
+  const secureContext = tls.createSecureContext({ key: options.keyPem, cert: options.certPem });
+  const handler = options.handler ?? forwarder();
+  return (host, port, client, head) => {
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length > 0) client.unshift(head);
+    const secure = new tls.TLSSocket(client, {
+      isServer: true,
+      secureContext,
+      ALPNProtocols: ['http/1.1'],
+    });
+    secure.on('error', () => secure.destroy());
+    const server = http.createServer((request, response) => {
+      handler(request, response, { host, port });
+    });
+    server.emit('connection', secure);
+  };
+}
