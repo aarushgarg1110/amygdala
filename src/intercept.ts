@@ -17,12 +17,27 @@ export type RequestHandler = (
   target: Target,
 ) => void;
 
-/** Sends a request upstream: its own body, or `body` when a handler has already read and changed it. */
+/** A reply from the upstream: Node's client parser sets the status of every response it emits. */
+export type UpstreamReply = http.IncomingMessage & { readonly statusCode: number };
+
+/** Writes an upstream reply to the client: the default passes it through; B3b's restores it. */
+export type Relay = (reply: UpstreamReply, response: http.ServerResponse) => void;
+
+/** How a handler wants a request sent, when not exactly as the client sent it. */
+export interface Outgoing {
+  /** A body the handler has already read (and perhaps changed), sent instead of the request's. */
+  readonly body?: Buffer;
+  /** Header values that replace the client's. */
+  readonly headers?: http.OutgoingHttpHeaders;
+  readonly relay?: Relay;
+}
+
+/** Sends a request upstream and its reply back, as the client sent it unless `outgoing` says. */
 export type Forward = (
   request: http.IncomingMessage,
   response: http.ServerResponse,
   target: Target,
-  body?: Buffer,
+  outgoing?: Outgoing,
 ) => void;
 
 // Hop-by-hop headers describe one connection, so they never cross the proxy.
@@ -49,14 +64,18 @@ export const defaultUpstreamCa = (): string[] => [
   ...tls.getCACertificates('system'),
 ];
 
-/** A reply from the upstream: Node's client parser sets the status of every response it emits. */
-type UpstreamReply = http.IncomingMessage & { readonly statusCode: number };
-
 export interface ForwardOptions {
   readonly upstreamCa?: readonly string[];
   /** Where to connect for a target: the target itself by default; tests point it at localhost. */
   readonly resolve?: (target: Target) => Target;
 }
+
+/** The reply as it came, streamed as it arrives. */
+export const passThrough: Relay = (reply, response) => {
+  response.writeHead(reply.statusCode, withoutHopByHop(reply.headers));
+  // Not pipe: an upstream dying mid-reply must cut the client off, never leave it waiting.
+  pipeline(reply, response, () => undefined);
+};
 
 /**
  * The pass-through handler: the request goes to the real host unchanged and the reply streams
@@ -69,9 +88,10 @@ export function forwarder(options: ForwardOptions = {}): Forward {
     ca: [...(options.upstreamCa ?? defaultUpstreamCa())],
   });
   const resolve = options.resolve ?? ((target: Target) => target);
-  return (request, response, target, body) => {
+  return (request, response, target, outgoing = {}) => {
     const to = resolve(target);
-    const headers = withoutHopByHop(request.headers);
+    const { body, relay = passThrough } = outgoing;
+    const headers = { ...withoutHopByHop(request.headers), ...outgoing.headers };
     // A replaced body has its own length; a request that had no body doesn't gain the header.
     if (body !== undefined && (body.length > 0 || headers['content-length'] !== undefined)) {
       headers['content-length'] = String(body.length);
@@ -87,9 +107,7 @@ export function forwarder(options: ForwardOptions = {}): Forward {
       agent,
     });
     upstream.on('response', (reply: UpstreamReply) => {
-      response.writeHead(reply.statusCode, withoutHopByHop(reply.headers));
-      // Not pipe: an upstream dying mid-reply must cut the client off, never leave it waiting.
-      pipeline(reply, response, () => undefined);
+      relay(reply, response);
     });
     upstream.on('error', () => {
       if (response.headersSent) response.destroy();

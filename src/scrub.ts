@@ -5,13 +5,17 @@ import { KeyCollisionError, RequestTokenizer } from './engine/request.ts';
 import { isRecord } from './engine/stream.ts';
 import { PlaceholderCollisionError, TokenMap } from './engine/token-map.ts';
 import { tokenizeText } from './engine/tokenize.ts';
-import type { Forward, RequestHandler, Target } from './intercept.ts';
+import type { TrustOptions } from './engine/trust.ts';
+import type { Forward, RequestHandler } from './intercept.ts';
+import { restoringRelay } from './reply.ts';
 
 /** Anthropic refuses Messages requests over 32 MB, so nothing valid is ever larger. */
 export const MAX_BODY_BYTES = 32 * 1024 * 1024;
 // The only host whose model requests are rewritten; on any other host the same path is just scanned.
 const API_HOST = 'api.anthropic.com';
 const MODEL_PATH = /^\/v1\/messages(?:\/|$)/;
+// A model reply must arrive readable to be restored (the R1 and R5 recorders asked the same).
+const READABLE = { 'accept-encoding': 'identity' };
 // The decision's path when even the path couldn't be scanned: the raw one might hold a value.
 const UNSCANNED = '(not scanned)';
 
@@ -38,6 +42,8 @@ export interface ScrubOptions {
   readonly report: (decision: Decision) => void;
   /** Shared with the restorer, which needs the placeholders issued here. */
   readonly map?: TokenMap;
+  /** Which tools get real values back in their arguments (the config's [restore] table). */
+  readonly trust?: TrustOptions;
   readonly maxBodyBytes?: number;
 }
 
@@ -131,15 +137,14 @@ function block(response: http.ServerResponse, reason: string, close: boolean) {
 interface Scanning {
   readonly request: http.IncomingMessage;
   readonly bytes: Buffer;
-  readonly target: Target;
+  readonly model: boolean;
   readonly url: string;
-  readonly rawPath: string;
   readonly hits: Hits;
   readonly scan: (text: string, hits: Hits) => string;
   readonly tokenizer: RequestTokenizer;
 }
 
-function judge({ request, bytes, target, url, rawPath, hits, scan, tokenizer }: Scanning): Verdict {
+function judge({ request, bytes, model, url, hits, scan, tokenizer }: Scanning): Verdict {
   // The URL and headers can't be rewritten safely, so a value there blocks the request.
   const outside: Hits = {};
   scan(`${url}\n${decoded(url)}\n${request.rawHeaders.join('\n')}`, outside);
@@ -173,7 +178,6 @@ function judge({ request, bytes, target, url, rawPath, hits, scan, tokenizer }: 
     return blocked("it holds amygdala's own key", thread);
   }
   const found = Object.keys(result.hits).length > 0;
-  const model = target.host === API_HOST && request.method === 'POST' && MODEL_PATH.test(rawPath);
   if (found && !model) {
     return blocked(`a protected value outside a model request (${counts(result.hits)})`, thread);
   }
@@ -200,6 +204,7 @@ export function createScrubber(options: ScrubOptions): RequestHandler {
   const detectors = [...options.detectors, createOwnKeyDetector(options.key)];
   const tokenizer = new RequestTokenizer(detectors, map);
   const limit = options.maxBodyBytes ?? MAX_BODY_BYTES;
+  const relay = restoringRelay(map, options.trust);
   const scan = (text: string, hits: Hits) => {
     const result = tokenizeText(text, detectors, map);
     add(hits, result.hits);
@@ -210,6 +215,7 @@ export function createScrubber(options: ScrubOptions): RequestHandler {
     // Node's server sets both on every request it parses.
     const url = String(request.url);
     const rawPath = url.replace(/\?.*$/s, '');
+    const model = target.host === API_HOST && request.method === 'POST' && MODEL_PATH.test(rawPath);
     readBody(request, limit, (body) => {
       const hits: Hits = {};
       let path = UNSCANNED;
@@ -217,7 +223,7 @@ export function createScrubber(options: ScrubOptions): RequestHandler {
       try {
         path = scan(decoded(rawPath), {});
         verdict = body.ok
-          ? judge({ request, bytes: body.bytes, target, url, rawPath, hits, scan, tokenizer })
+          ? judge({ request, bytes: body.bytes, model, url, hits, scan, tokenizer })
           : blocked(body.reason, false);
       } catch (error) {
         const collided =
@@ -238,8 +244,12 @@ export function createScrubber(options: ScrubOptions): RequestHandler {
         documents: verdict.documents,
         thread: verdict.thread,
       });
-      if (verdict.action !== 'blocked') options.forward(request, response, target, verdict.send);
-      else if (body.ok) block(response, verdict.reason, false);
+      if (verdict.action !== 'blocked') {
+        options.forward(request, response, target, {
+          body: verdict.send,
+          ...(model ? { headers: READABLE, relay } : {}),
+        });
+      } else if (body.ok) block(response, verdict.reason, false);
       else if (!body.gone) block(response, verdict.reason, true);
     });
   };

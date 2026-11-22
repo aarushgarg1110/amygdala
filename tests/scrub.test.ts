@@ -1,54 +1,32 @@
 import http from 'node:http';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, test } from 'vitest';
-import { buildDetectors, type Detector } from '../src/engine/detector.ts';
+import type { Detector } from '../src/engine/detector.ts';
 import { ownKeyEncodings } from '../src/engine/detectors/own-key.ts';
 import { TokenMap } from '../src/engine/token-map.ts';
 import { createScrubber, type Decision, type ScrubOptions } from '../src/scrub.ts';
 import {
+  call,
+  type Call,
   cleanup,
+  CUSTOMER,
   DATADOG,
+  DETECTORS,
   HOST,
+  ID,
+  KEY,
   localForwarder,
+  modelRequest,
+  PLACEHOLDER,
   proxyWith,
   secureThrough,
-  send,
   upstream,
 } from './harness.ts';
 
 afterEach(cleanup);
 
-const KEY = Uint8Array.from(Array(32).keys());
-const CUSTOMER = 'pattern:customer-id';
-const DETECTORS = buildDetectors([
-  { kind: 'pattern', name: 'customer-id', prefix: 'CUST', pattern: 'CUST-\\d{4,}' },
-]);
-const ID = 'CUST-0001';
-const PLACEHOLDER = new TokenMap(KEY).issue(CUSTOMER, 'CUST', ID, ID);
 const KEY_HEX = Buffer.from(KEY).toString('hex');
 const KEY_BASE64 = Buffer.from(KEY).toString('base64');
-
-/** A model request mentioning `id` in five places: system, user text, reply, tool call, tool result. */
-const modelRequest = (id: string) => ({
-  model: 'claude-haiku-5-5',
-  max_tokens: 1024,
-  stream: true,
-  system: [{ type: 'text', text: `You help with ${id}.` }],
-  messages: [
-    { role: 'user', content: [{ type: 'text', text: `Look up ${id}` }] },
-    {
-      role: 'assistant',
-      content: [
-        { type: 'text', text: `Reading ${id} now.` },
-        { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: `/data/${id}.csv` } },
-      ],
-    },
-    {
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: `${id},42` }],
-    },
-  ],
-});
 
 type Options = Partial<Pick<ScrubOptions, 'map' | 'maxBodyBytes' | 'detectors'>>;
 
@@ -75,36 +53,6 @@ async function scrubbing(options: Options = {}) {
     return decisions[0];
   };
   return { up, decisions, decided, port: proxy.port };
-}
-
-interface Call {
-  readonly host?: string;
-  readonly method?: string;
-  readonly path?: string;
-  readonly headers?: Record<string, string>;
-  readonly body?: string | Buffer | object | undefined;
-}
-
-const bytesOf = (body: Call['body']) =>
-  body === undefined
-    ? undefined
-    : Buffer.isBuffer(body)
-      ? body
-      : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
-
-/** One request through the proxy, by default a model request to api.anthropic.com. */
-async function call(port: number, call: Call = {}) {
-  const host = call.host ?? HOST;
-  const secure = await secureThrough(port, undefined, undefined, { host });
-  return send(
-    secure,
-    {
-      method: call.method ?? 'POST',
-      path: call.path ?? '/v1/messages?beta=true',
-      headers: { host, ...call.headers },
-    },
-    bytesOf(call.body),
-  );
 }
 
 interface Blocked extends Call {
