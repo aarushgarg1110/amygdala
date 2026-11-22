@@ -616,6 +616,17 @@ const restoreAll = (value: unknown): unknown => {
   return value;
 };
 
+describe('StreamRestorer: hold-back', () => {
+  test.todo('should pass every recording through byte for byte when nothing is issued');
+  test.todo('should send at once an end no issued prefix could start');
+  test.todo('should hold an end that could still become an issued placeholder');
+  test.todo('should never send a piece of an issued placeholder early, wherever it is split');
+  test.todo('should send the capitals before a placeholder at once');
+  test.todo('should hold the longest possible start when one prefix ends another');
+  test.todo('should send a held end that never completes unchanged');
+  test.todo("should still hold a recording's end that could start an issued prefix");
+});
+
 describe('restoreMessage', () => {
   test("should restore a placeholder in a reply's text", () => {
     // Assemble

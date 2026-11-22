@@ -316,6 +316,8 @@ describe('restoring replies', () => {
     },
   );
 
+  test.todo('should pass every recorded reply through byte for byte when nothing is issued');
+
   test('should restore a placeholder from an earlier request in a reply to a clean one', async () => {
     const { port } = await restoring(streaming(stream(text(0, [`Still ${PLACEHOLDER}.`]))));
     await ask(port);
