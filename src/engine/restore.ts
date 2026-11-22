@@ -1,7 +1,7 @@
 import { MAX_PREFIX, TOKEN_CHARS } from './placeholder.ts';
 import { formatEvent, isRecord, type Block, type StreamEvent } from './stream.ts';
 import type { TokenMap } from './token-map.ts';
-import { PLACEHOLDER_CANDIDATE, restoreText } from './tokenize.ts';
+import { restoreText } from './tokenize.ts';
 import { trustRule, type TrustOptions } from './trust.ts';
 
 /** The longest end of streamed text that could still become a placeholder: prefix, "_", 9 of 10. */
@@ -23,23 +23,29 @@ const ARGUMENTS: Restorable = {
   encode: (original) => JSON.stringify(original).slice(1, -1),
 };
 
-// An end of text that may be the start of a placeholder still arriving. Only the last MAX_PREFIX
-// capitals of a run matter, because restoreText tries prefixes up to that length.
-const PARTIAL_END = new RegExp(
-  `[A-Z0-9]{1,${String(MAX_PREFIX)}}(?:_[a-z2-7]{0,${String(TOKEN_CHARS - 1)}})?$`,
-);
+// What may follow "PREFIX_" in a placeholder still arriving: fewer than its TOKEN_CHARS characters.
+const TOKEN_START = new RegExp(`^[a-z2-7]{0,${String(TOKEN_CHARS - 1)}}$`);
 
-/** Where the held end of `text` starts: never inside a complete placeholder. */
-function holdFrom(text: string): number {
-  let from = PARTIAL_END.exec(text)?.index ?? text.length;
-  // Base32 has the digits 2-7, so a placeholder ending in one ("CUST_ubw2bbblc4") would otherwise
-  // look like the start of a new run and be cut, its last digit held and the rest sent unrestored.
-  for (const match of text.matchAll(PLACEHOLDER_CANDIDATE)) {
-    if (match.index < from && from < match.index + match[0].length) {
-      from = match.index + match[0].length;
-    }
+/** Whether `end` could still grow into a placeholder with one of `prefixes`. */
+function couldGrow(end: string, prefixes: ReadonlySet<string>): boolean {
+  for (const prefix of prefixes) {
+    const head = `${prefix}_`;
+    if (head.startsWith(end)) return true;
+    if (end.startsWith(head) && TOKEN_START.test(end.slice(head.length))) return true;
   }
-  return from;
+  return false;
+}
+
+/**
+ * Where the held end of `text` starts: the longest end that could still grow into a placeholder
+ * the map has issued, so with nothing issued nothing waits. Prefixes start with a letter and the
+ * part after "_" is lower case, so digits and complete placeholders are never held.
+ */
+function holdFrom(text: string, prefixes: ReadonlySet<string>): number {
+  for (let from = Math.max(0, text.length - MAX_HOLDBACK_CHARS); from < text.length; from++) {
+    if (couldGrow(text.slice(from), prefixes)) return from;
+  }
+  return text.length;
 }
 
 /**
@@ -73,7 +79,7 @@ export class StreamRestorer {
     const piece = delta[kind.field];
     if (typeof piece !== 'string') return event.raw;
     const text = (this.#held.get(block.index)?.text ?? '') + piece;
-    const from = holdFrom(text);
+    const from = holdFrom(text, this.#map.prefixes);
     this.#held.set(block.index, { kind, text: text.slice(from) });
     const sent = restoreText(text.slice(0, from), this.#map, kind.encode);
     if (sent === piece) return event.raw;

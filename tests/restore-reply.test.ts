@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import type tls from 'node:tls';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, test } from 'vitest';
-import { isRecord, StreamParser } from '../src/engine/stream.ts';
 import type { TrustOptions } from '../src/engine/trust.ts';
 import { createScrubber } from '../src/scrub.ts';
 import {
@@ -51,27 +50,6 @@ const tool = (index: number, name: string, json: string) =>
   delta(index, { type: 'input_json_delta', partial_json: json }) +
   stop(index);
 const stream = (...blocks: string[]) => MESSAGE_START + blocks.join('') + MESSAGE_END;
-
-const parsed = (body: string) => {
-  const parser = new StreamParser();
-  return [...parser.push(body), ...parser.end()];
-};
-type Parsed = ReturnType<typeof parsed>[number];
-const isDelta = (e: Parsed) => isRecord(e.data) && e.data.type === 'content_block_delta';
-
-/** Every block's deltas joined, per delta field: text, arguments, thinking and signature alike. */
-function content(events: Parsed[]): Record<string, string> {
-  const joined: Record<string, string> = {};
-  for (const e of events.filter(isDelta)) {
-    const { index, delta: change } = e.data as { index: number; delta: Record<string, unknown> };
-    for (const [field, value] of Object.entries(change)) {
-      if (field === 'type' || typeof value !== 'string') continue;
-      const key = `${String(index)}.${field}`;
-      joined[key] = (joined[key] ?? '') + value;
-    }
-  }
-  return joined;
-}
 
 /** What the client received for each block: text deltas and tool arguments, joined. */
 function received(body: string): Map<number, string> {
@@ -291,7 +269,7 @@ describe('restoring replies', () => {
   });
 
   test.each(readdirSync(FIXTURES))(
-    'should keep every recorded Claude Code reply: its events, content and non-delta bytes: %s',
+    'should pass every recorded reply through byte for byte when nothing is issued: %s',
     async (name) => {
       // Assemble: the recording, sent in three pieces
       const recorded = readFileSync(join(FIXTURES, name, 'response.sse'));
@@ -306,13 +284,8 @@ describe('restoring replies', () => {
       // Act
       const { body } = await call(port, { body: modelRequest('nobody') });
 
-      // Assert: the hold-back may move a character between deltas (A6), but nothing else changes
-      const [sent, original] = [parsed(body.toString()), parsed(recorded.toString())];
-      expect(sent.map((e) => e.name)).toEqual(original.map((e) => e.name));
-      expect(sent.filter((e) => !isDelta(e)).map((e) => e.raw)).toEqual(
-        original.filter((e) => !isDelta(e)).map((e) => e.raw),
-      );
-      expect(content(sent)).toEqual(content(original));
+      // Assert: nothing was issued, so nothing is held back and no event is rewritten
+      expect(body.equals(recorded)).toBe(true);
     },
   );
 
