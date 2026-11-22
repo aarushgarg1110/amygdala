@@ -2,6 +2,7 @@ import { createPrivateKey, X509Certificate } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import { Duplex } from 'node:stream';
 import tls from 'node:tls';
 import { afterEach, describe, expect, test } from 'vitest';
 import type { Certificates } from '../src/certs.ts';
@@ -31,8 +32,12 @@ const UPSTREAM_CERTS = MINTER.mint([HOST]);
 
 /** A local stand-in for the real host, recording what reaches it. */
 async function upstream(answer: http.RequestListener, certs = UPSTREAM_CERTS) {
-  const seen: { method: string | undefined; headers: http.IncomingHttpHeaders; body: Buffer }[] =
-    [];
+  const seen: {
+    method: string | undefined;
+    headers: http.IncomingHttpHeaders;
+    body: Buffer;
+    servername: unknown;
+  }[] = [];
   const server = https.createServer(
     { key: keyPem(certs), cert: certs.certPem },
     (request, response) => {
@@ -43,55 +48,140 @@ async function upstream(answer: http.RequestListener, certs = UPSTREAM_CERTS) {
           method: request.method,
           headers: request.headers,
           body: Buffer.concat(chunks),
+          servername: (request.socket as tls.TLSSocket).servername,
         });
         answer(request, response);
       });
     },
   );
+  let connections = 0;
+  server.on('connection', () => (connections += 1));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   CLEANUP.push(() => new Promise((resolve) => server.close(resolve)));
-  return { port: (server.address() as net.AddressInfo).port, seen };
+  return {
+    port: (server.address() as net.AddressInfo).port,
+    seen,
+    connections: () => connections,
+  };
 }
 
-/** A proxy intercepting HOST, forwarding to `port` on localhost unless a handler is given. */
-async function proxy(port: number, handler?: RequestHandler) {
+/** A TCP relay to `port` that can cut its connections from the proxy (FIN or RST) on demand. */
+async function cuttingRelay(port: number) {
+  const fromProxy: net.Socket[] = [];
+  const relay = net.createServer((socket) => {
+    fromProxy.push(socket);
+    const onward = net.connect(port, '127.0.0.1');
+    socket.pipe(onward);
+    onward.pipe(socket);
+    socket.on('error', () => onward.destroy());
+    socket.on('close', () => onward.destroy());
+    onward.on('error', () => socket.destroy());
+  });
+  await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+  CLEANUP.push(() => new Promise((resolve) => relay.close(resolve)));
+  return {
+    port: (relay.address() as net.AddressInfo).port,
+    cut: (how: (socket: net.Socket) => void) => {
+      for (const socket of fromProxy) how(socket);
+    },
+  };
+}
+
+/** A proxy intercepting `host`, forwarding to `port` on localhost unless a handler is given. */
+async function proxy(
+  port: number,
+  handler?: RequestHandler | 'default',
+  { host = HOST, certs = PROXY_CERTS } = {},
+) {
   const intercept = createInterceptor({
-    keyPem: keyPem(PROXY_CERTS),
-    certPem: PROXY_CERTS.certPem,
-    handler:
-      handler ??
-      forwarder({
-        upstreamCa: [UPSTREAM_CERTS.caPem],
-        resolve: () => ({ host: '127.0.0.1', port }),
-      }),
+    keyPem: keyPem(certs),
+    certPem: certs.certPem,
+    ...(handler === 'default'
+      ? {}
+      : {
+          handler:
+            handler ??
+            forwarder({
+              upstreamCa: [UPSTREAM_CERTS.caPem],
+              resolve: () => ({ host: '127.0.0.1', port }),
+            }),
+        }),
   });
-  const started = await startProxy({ interceptHosts: [HOST], intercept });
+  // Records the early bytes each CONNECT arrived with.
+  const heads: number[] = [];
+  const started = await startProxy({
+    interceptHosts: [host],
+    intercept: (target, targetPort, client, head) => {
+      heads.push(head.length);
+      intercept(target, targetPort, client, head);
+    },
+  });
   CLEANUP.push(() => started.close());
-  return started;
+  return { port: started.port, heads };
 }
 
-/** CONNECT through the proxy, then TLS to HOST trusting `ca`. */
-async function secureThrough(proxyPort: number, ca = PROXY_CERTS.caPem, alpn?: string[]) {
-  const raw = net.connect(proxyPort, '127.0.0.1');
-  await new Promise<void>((resolve, reject) => {
-    raw.once('error', reject);
-    raw.write(`CONNECT ${HOST}:443 HTTP/1.1\r\nHost: ${HOST}:443\r\n\r\n`);
-    raw.once('data', () => {
-      resolve();
-    });
-  });
-  const secure = tls.connect({
-    socket: raw,
-    servername: HOST,
-    ca,
-    ...(alpn ? { ALPNProtocols: alpn } : {}),
-  });
+const connectTo = (host: string, port: number) =>
+  `CONNECT ${host}:${String(port)} HTTP/1.1\r\nHost: ${host}:${String(port)}\r\n\r\n`;
+
+async function handshake(secure: tls.TLSSocket) {
   await new Promise<void>((resolve, reject) => {
     secure.once('secureConnect', resolve);
     secure.once('error', reject);
   });
   CLEANUP.push(() => secure.destroy());
   return secure;
+}
+
+/** CONNECT through the proxy, then TLS to `host` trusting `ca`. */
+async function secureThrough(
+  proxyPort: number,
+  ca = PROXY_CERTS.caPem,
+  alpn?: string[],
+  { host = HOST, port = 443 } = {},
+) {
+  const raw = net.connect(proxyPort, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    raw.once('error', reject);
+    raw.write(connectTo(host, port));
+    raw.once('data', () => {
+      resolve();
+    });
+  });
+  return handshake(
+    tls.connect({ socket: raw, servername: host, ca, ...(alpn ? { ALPNProtocols: alpn } : {}) }),
+  );
+}
+
+/**
+ * Like secureThrough, but the TLS ClientHello goes out in the same write as the CONNECT, so the
+ * proxy receives it as early bytes before it has answered.
+ */
+async function secureWithEarlyBytes(proxyPort: number) {
+  const raw = net.connect(proxyPort, '127.0.0.1');
+  CLEANUP.push(() => raw.destroy());
+  let sent = false;
+  let answered = false;
+  let pending = Buffer.alloc(0);
+  const bridge = new Duplex({
+    read: () => undefined,
+    write(chunk: Buffer, encoding, done) {
+      raw.write(sent ? chunk : Buffer.concat([Buffer.from(connectTo(HOST, 443)), chunk]), done);
+      sent = true;
+    },
+  });
+  // The proxy's "200 Connection Established" is consumed here; everything after it is TLS.
+  raw.on('data', (chunk: Buffer) => {
+    if (answered) {
+      bridge.push(chunk);
+      return;
+    }
+    pending = Buffer.concat([pending, chunk]);
+    const end = pending.indexOf('\r\n\r\n');
+    if (end === -1) return;
+    answered = true;
+    bridge.push(pending.subarray(end + 4));
+  });
+  return handshake(tls.connect({ socket: bridge, servername: HOST, ca: PROXY_CERTS.caPem }));
 }
 
 /** One HTTP request over `secure`, resolving with the reply and its body. */
@@ -147,6 +237,7 @@ describe('createInterceptor', () => {
     ]);
     expect(up.seen[0]?.headers['x-ask']).toBe('q');
     expect(up.seen[0]?.headers.host).toBe(HOST);
+    expect(up.seen[0]?.servername).toBe(HOST);
   });
 
   test('should forward a large body byte for byte', async () => {
@@ -302,5 +393,86 @@ describe('createInterceptor', () => {
     for (const pem of [...tls.getCACertificates('system'), ...tls.getCACertificates('bundled')]) {
       expect(fingerprints.has(new X509Certificate(pem).fingerprint256)).toBe(true);
     }
+  });
+
+  test('should forward to the CONNECT target itself, trusting only the default CAs, with no handler', async () => {
+    // Assemble: a local "real host" whose CA is in neither the system nor the bundled store
+    const certs = MINTER.mint(['localhost']);
+    const up = await upstream((request, response) => response.end('should not happen'), certs);
+    const started = await proxy(up.port, 'default', { host: 'localhost', certs });
+
+    // Act
+    const secure = await secureThrough(started.port, certs.caPem, undefined, {
+      host: 'localhost',
+      port: up.port,
+    });
+    const { reply } = await send(secure, { method: 'POST', path: '/' }, Buffer.from('secret'));
+
+    // Assert: it reached the target's own port, refused the certificate, and sent nothing
+    expect(reply.statusCode).toBe(502);
+    expect(up.connections()).toBeGreaterThan(0);
+    expect(up.seen).toEqual([]);
+  });
+
+  test.each([
+    ['closes', (socket: net.Socket) => socket.destroy()],
+    ['resets', (socket: net.Socket) => socket.resetAndDestroy()],
+  ])(
+    'should cut the client off, not answer 502, when the upstream %s partway through a reply',
+    async (label, cut) => {
+      // Assemble: the upstream sends one event and holds; a relay in front of it does the cutting
+      const up = await upstream((request, response) => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write('event: one\n\n');
+      });
+      const relay = await cuttingRelay(up.port);
+      const started = await proxy(
+        0,
+        forwarder({
+          upstreamCa: [UPSTREAM_CERTS.caPem],
+          resolve: () => ({ host: '127.0.0.1', port: relay.port }),
+        }),
+      );
+      const secure = await secureThrough(started.port);
+
+      // Act: once the first event is through, the upstream connection goes away
+      const outcome = await new Promise<{
+        status: number | undefined;
+        body: string;
+        complete: boolean;
+      }>((resolve, reject) => {
+        const request = http.request(
+          { method: 'GET', path: '/', headers: { host: HOST }, createConnection: () => secure },
+          (reply) => {
+            const chunks: Buffer[] = [];
+            reply.on('data', (chunk: Buffer) => {
+              chunks.push(chunk);
+              relay.cut(cut);
+            });
+            reply.on('close', () => {
+              resolve({
+                status: reply.statusCode,
+                body: Buffer.concat(chunks).toString(),
+                complete: reply.complete,
+              });
+            });
+          },
+        );
+        request.on('error', reject);
+        request.end();
+      });
+
+      // Assert
+      expect(outcome).toEqual({ status: 200, body: 'event: one\n\n', complete: false });
+    },
+  );
+
+  test('should accept a ClientHello that arrives with the CONNECT', async () => {
+    const up = await upstream((request, response) => response.end('ok'));
+    const started = await proxy(up.port);
+    const secure = await secureWithEarlyBytes(started.port);
+    const { body } = await send(secure, { method: 'GET', path: '/' });
+    expect(started.heads[0]).toBeGreaterThan(0);
+    expect(body.toString()).toBe('ok');
   });
 });

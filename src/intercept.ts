@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { pipeline } from 'node:stream';
 import tls from 'node:tls';
 import type { Intercept } from './proxy.ts';
 
@@ -40,6 +41,9 @@ export const defaultUpstreamCa = (): string[] => [
   ...tls.getCACertificates('system'),
 ];
 
+/** A reply from the upstream: Node's client parser sets the status of every response it emits. */
+type UpstreamReply = http.IncomingMessage & { readonly statusCode: number };
+
 export interface ForwardOptions {
   readonly upstreamCa?: readonly string[];
   /** Where to connect for a target: the target itself by default; tests point it at localhost. */
@@ -69,9 +73,10 @@ export function forwarder(options: ForwardOptions = {}): RequestHandler {
       headers: withoutHopByHop(request.headers),
       agent,
     });
-    upstream.on('response', (reply) => {
-      response.writeHead(reply.statusCode ?? 502, withoutHopByHop(reply.headers));
-      reply.pipe(response);
+    upstream.on('response', (reply: UpstreamReply) => {
+      response.writeHead(reply.statusCode, withoutHopByHop(reply.headers));
+      // Not pipe: an upstream dying mid-reply must cut the client off, never leave it waiting.
+      pipeline(reply, response, () => undefined);
     });
     upstream.on('error', () => {
       if (response.headersSent) response.destroy();
