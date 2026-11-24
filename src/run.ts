@@ -4,12 +4,13 @@ import { resolve } from 'node:path';
 import { AgentError, start, stop, type AgentDeps } from './agent.ts';
 import { CertificateError } from './cert-store.ts';
 import { MintError, OpensslMinter } from './certs.ts';
-import { ConfigError } from './config.ts';
+import { ConfigError, loadConfig } from './config.ts';
 import { dataDir, init, InitError, type InitDeps } from './init.ts';
 import type { Forward } from './intercept.ts';
 import { KeyError } from './key.ts';
 import { KeychainError, MacKeychain, tlsKeyStore } from './keychain.ts';
 import { runProcess } from './process.ts';
+import { SHELLS, shellFunction } from './shell.ts';
 import { queryStatus, serve, ServeError, type Running, type Status } from './serve.ts';
 
 /** What a command prints and the code it exits with; the entry point does the writing. */
@@ -98,6 +99,8 @@ Commands:
   stop       Turn it off now and at login
   status     Say whether the proxy is running, and what it has seen
   serve      Run the proxy in this terminal until Ctrl-C (start runs this for you)
+  shell-init Print the claude function for zsh or bash; add to ~/.zshrc:
+             eval "$(amygdala shell-init zsh)"
 
 Options:
   --help     Show this help
@@ -157,6 +160,7 @@ export async function main(
   if (command === 'status') return runStatus(rest, deps);
   if (command === 'start') return runStart(rest, deps);
   if (command === 'stop') return runStop(rest, deps);
+  if (command === 'shell-init') return runShellInit(rest, deps);
   return run(args, deps);
 }
 
@@ -257,6 +261,31 @@ function runStop(options: readonly string[], deps: MainDeps): Outcome {
     const reason = refusalOf(error);
     if (reason === undefined) throw error;
     return { exitCode: EXIT_FAILURE, stdout: '', stderr: `amygdala stop: ${reason}\n` };
+  }
+}
+
+function runShellInit(options: readonly string[], deps: MainDeps): Outcome {
+  const [shell, extra] = options;
+  if (shell === undefined || !SHELLS.includes(shell)) {
+    return {
+      exitCode: EXIT_USAGE,
+      stdout: '',
+      stderr: `amygdala shell-init: name a shell, ${SHELLS.join(' or ')}: eval "$(amygdala shell-init zsh)"\n`,
+    };
+  }
+  if (extra !== undefined) return unknownOption('shell-init', extra);
+  const dir = dataDir(deps.env);
+  try {
+    const { port } = loadConfig(dir);
+    const { node, entry } = deps.launch;
+    return { exitCode: 0, stdout: shellFunction({ dir, port, node, entry }), stderr: '' };
+  } catch (error) {
+    // Read-only, so any failure is reported: it runs at every shell start, where a crash helps no one.
+    return {
+      exitCode: EXIT_FAILURE,
+      stdout: '',
+      stderr: `amygdala shell-init: ${(error as Error).message}\n`,
+    };
   }
 }
 
