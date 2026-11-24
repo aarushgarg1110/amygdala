@@ -16,6 +16,12 @@ export const DEFAULT_INTERCEPT_HOSTS: readonly string[] = [
 ];
 // Every model request goes here, so a config that leaves it out protects nothing.
 const API_HOST = 'api.anthropic.com';
+/** The proxy's port when the config names none; the dev sandbox sets its own (decision 36). */
+export const DEFAULT_PORT = 47_070;
+// Below 1024 needs root on macOS; 65535 is the largest TCP port.
+const MIN_PORT = 1024;
+const MAX_PORT = 65_535;
+const PROXY_KEYS = ['intercept_hosts', 'port'];
 const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
 /** What `amygdala init` writes. Its example detector is commented out, so it won't load until edited. */
@@ -34,6 +40,7 @@ export const DEFAULT_CONFIG = `# amygdala configuration. No secrets live here: t
 trusted_prefixes = []                # e.g. "mcp__plugin_myops_myops__"
 
 [proxy]
+port = 47070                         # 1024-65535; a second data folder needs its own
 intercept_hosts = [
   "api.anthropic.com",
   "mcp-proxy.anthropic.com",
@@ -46,6 +53,7 @@ export interface Config {
   readonly detectors: readonly Detector[];
   readonly trust: TrustOptions;
   readonly interceptHosts: readonly string[];
+  readonly port: number;
 }
 
 /** The config can't be used; the message names the file and the key at fault. */
@@ -97,6 +105,14 @@ class Table {
   boolean(key: string): boolean {
     const value = this.#fields[key];
     if (typeof value !== 'boolean') throw this.error(key, 'must be true or false');
+    return value;
+  }
+
+  integer(key: string): number {
+    const value = this.#fields[key];
+    if (typeof value !== 'number' || !Number.isInteger(value)) {
+      throw this.error(key, 'must be a whole number');
+    }
     return value;
   }
 
@@ -172,7 +188,7 @@ function trustFrom(root: Table): TrustOptions {
 }
 
 function hostsFrom(root: Table): string[] {
-  const table = root.table('proxy', ['intercept_hosts']);
+  const table = root.table('proxy', PROXY_KEYS);
   if (!table?.has('intercept_hosts')) return [...DEFAULT_INTERCEPT_HOSTS];
   // Host names ignore case, so compare and store them in lower case.
   const hosts = table.strings('intercept_hosts').map((host) => host.toLowerCase());
@@ -189,6 +205,16 @@ function hostsFrom(root: Table): string[] {
     throw table.error('intercept_hosts', `must include ${API_HOST}, which carries every request`);
   }
   return hosts;
+}
+
+function portFrom(root: Table): number {
+  const table = root.table('proxy', PROXY_KEYS);
+  if (!table?.has('port')) return DEFAULT_PORT;
+  const port = table.integer('port');
+  if (port < MIN_PORT || port > MAX_PORT) {
+    throw table.error('port', `must be from ${String(MIN_PORT)} to ${String(MAX_PORT)}`);
+  }
+  return port;
 }
 
 /** The top-level table of the TOML in `text`, its keys checked. */
@@ -216,6 +242,7 @@ export function parseConfig(text: string, file: string): Config {
     detectors: detectorsFrom(root),
     trust: trustFrom(root),
     interceptHosts: hostsFrom(root),
+    port: portFrom(root),
   };
 }
 

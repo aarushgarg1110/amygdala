@@ -1,15 +1,23 @@
 // Real local TLS on both sides of the proxy, for tests of what the intercept handlers send and return.
 import { createPrivateKey } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import tls from 'node:tls';
 import type { Certificates } from '../src/certs.ts';
+import { CONFIG_FILE } from '../src/config.ts';
+import { init } from '../src/init.ts';
+import type { MainDeps } from '../src/run.ts';
 import { buildDetectors } from '../src/engine/detector.ts';
 import { TokenMap } from '../src/engine/token-map.ts';
 import { createInterceptor, forwarder, type RequestHandler } from '../src/intercept.ts';
 import { startProxy } from '../src/proxy.ts';
+import { CONTROL_SOCKET } from '../src/serve.ts';
 import { MINTER } from './deps.ts';
+import { MemoryStore } from './memory-store.ts';
 
 export const HOST = 'api.anthropic.com';
 export const DATADOG = 'http-intake.logs.us5.datadoghq.com';
@@ -217,4 +225,96 @@ export async function call(port: number, call: Call = {}) {
     },
     bytesOf(call.body),
   );
+}
+
+// Real data folders for the serve, start and stop tests.
+/** launchd for tests that must never reach it: any call fails the test. */
+export const NO_LAUNCHD: MainDeps['launch'] = {
+  run: (command, args) => {
+    throw new Error(`launchctl must not run here: ${args.join(' ')}`);
+  },
+  uid: 501,
+  home: '/nonexistent',
+  node: process.execPath,
+  entry: '/nonexistent/cli.js',
+};
+
+/** A config with the synthetic customer-id detector on `port`. */
+export const CONFIG = (port: number) => `[[detectors]]
+kind = "pattern"
+name = "customer-id"
+prefix = "CUST"
+pattern = 'CUST-\\d{4,}'
+
+[proxy]
+port = ${String(port)}
+`;
+
+/** A port nothing listens on right now. */
+export async function freePort(): Promise<number> {
+  const probe = net.createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address() as net.AddressInfo;
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
+
+/** Whether anything accepts connections on `port` of localhost. */
+export const listening = (port: number) =>
+  new Promise<boolean>((resolve) => {
+    const socket = net.connect(port, '127.0.0.1');
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      resolve(false);
+    });
+  });
+
+/** A data folder set up by init, its config holding the customer-id detector and a free port. */
+export async function dataFolder() {
+  const dir = mkdtempSync(join(tmpdir(), 'amyg-'));
+  CLEANUP.push(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const store = new MemoryStore();
+  const tlsKeys = new MemoryStore();
+  init(dir, { store, tlsKeys, minter: MINTER });
+  const port = await freePort();
+  writeFileSync(join(dir, CONFIG_FILE), CONFIG(port));
+  const up = await upstream((request, response) => response.end('ok'));
+  const lines: string[] = [];
+  const deps = {
+    store,
+    tlsKeys,
+    version: 'test',
+    log: (line: string) => lines.push(line),
+    forward: localForwarder(up.port),
+  };
+  return { dir, port, store, up, lines, deps, socket: join(dir, CONTROL_SOCKET) };
+}
+
+export type Folder = Awaited<ReturnType<typeof dataFolder>>;
+
+export const reads = (store: MemoryStore) =>
+  store.calls.filter((call) => call.startsWith('read ')).length;
+
+/** main's dependencies for `folder`, with signals handed to the test instead of the process. */
+export function mainDeps(
+  folder: Folder,
+  onSignals: MainDeps['onSignals'] = () => undefined,
+  { local = true, launch = NO_LAUNCHD }: { local?: boolean; launch?: MainDeps['launch'] } = {},
+): MainDeps {
+  return {
+    env: { AMYGDALA_DIR: folder.dir },
+    store: folder.store,
+    tlsKeys: folder.deps.tlsKeys,
+    minter: MINTER,
+    log: folder.deps.log,
+    // Without it serve would forward to the real hosts; only refused starts leave it out.
+    ...(local ? { forward: folder.deps.forward } : {}),
+    onSignals,
+    launch,
+  };
 }
